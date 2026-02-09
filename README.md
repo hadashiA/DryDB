@@ -42,6 +42,8 @@ VKV is a read-only embedded B+Tree based key/value database, implemented pure C#
 - CLI tool
 - TODO
   - Read values by key prefix
+  - Support more large blob (currentry 65536B is limit)
+  - Sort order
 
 ## Why read-only ?
 
