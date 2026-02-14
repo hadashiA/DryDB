@@ -259,6 +259,147 @@ public class ReadOnlyTableTest
     }
 
     [Test]
+    public async Task GetRangeWithPrefix_Basic()
+    {
+        var table = await TestHelper.BuildTableAsync(
+            KeyEncoding.Ascii,
+            databaseConfigure: builder => builder.PageSize = 128,
+            tableConfigure: builder =>
+            {
+                builder.Append("abc001"u8.ToArray(), "v1"u8.ToArray());
+                builder.Append("abc002"u8.ToArray(), "v2"u8.ToArray());
+                builder.Append("abc003"u8.ToArray(), "v3"u8.ToArray());
+                builder.Append("abd001"u8.ToArray(), "v4"u8.ToArray());
+                builder.Append("xyz001"u8.ToArray(), "v5"u8.ToArray());
+            });
+
+        using var result = table.GetRangeWithPrefix("abc"u8);
+        Assert.That(result.Count, Is.EqualTo(3));
+    }
+
+    [Test]
+    public async Task GetRangeWithPrefix_EmptyPrefix()
+    {
+        var table = await TestHelper.BuildTableAsync(
+            KeyEncoding.Ascii,
+            databaseConfigure: builder => builder.PageSize = 128,
+            tableConfigure: builder =>
+            {
+                builder.Append("key1"u8.ToArray(), "v1"u8.ToArray());
+            });
+
+        using var result = table.GetRangeWithPrefix(ReadOnlySpan<byte>.Empty);
+        Assert.That(result.Count, Is.EqualTo(0));
+    }
+
+    [Test]
+    public async Task GetRangeWithPrefix_NoMatch()
+    {
+        var table = await TestHelper.BuildTableAsync(
+            KeyEncoding.Ascii,
+            databaseConfigure: builder => builder.PageSize = 128,
+            tableConfigure: builder =>
+            {
+                builder.Append("abc001"u8.ToArray(), "v1"u8.ToArray());
+                builder.Append("abc002"u8.ToArray(), "v2"u8.ToArray());
+            });
+
+        using var result = table.GetRangeWithPrefix("zzz"u8);
+        Assert.That(result.Count, Is.EqualTo(0));
+    }
+
+    [Test]
+    public async Task GetRangeWithPrefix_TrailingFF()
+    {
+        var table = await TestHelper.BuildTableAsync(
+            KeyEncoding.Ascii,
+            databaseConfigure: builder => builder.PageSize = 128,
+            tableConfigure: builder =>
+            {
+                builder.Append(new byte[] { 0x61, 0xFF, 0x01 }, "v1"u8.ToArray());
+                builder.Append(new byte[] { 0x61, 0xFF, 0x02 }, "v2"u8.ToArray());
+                builder.Append(new byte[] { 0x62, 0x00, 0x01 }, "v3"u8.ToArray());
+            });
+
+        // Prefix [0x61, 0xFF] — trailing 0xFF stripped, endKey becomes [0x62], excludes v3
+        using var result = table.GetRangeWithPrefix([0x61, 0xFF]);
+        Assert.That(result.Count, Is.EqualTo(2));
+    }
+
+    [Test]
+    public async Task GetRangeWithPrefix_AllFF()
+    {
+        var table = await TestHelper.BuildTableAsync(
+            KeyEncoding.Ascii,
+            databaseConfigure: builder => builder.PageSize = 128,
+            tableConfigure: builder =>
+            {
+                builder.Append(new byte[] { 0xFF, 0xFF, 0x01 }, "v1"u8.ToArray());
+                builder.Append(new byte[] { 0xFF, 0xFF, 0x02 }, "v2"u8.ToArray());
+            });
+
+        // All 0xFF prefix — should scan from prefix to end
+        using var result = table.GetRangeWithPrefix([0xFF, 0xFF]);
+        Assert.That(result.Count, Is.EqualTo(2));
+    }
+
+    [Test]
+    public async Task GetRangeWithPrefix_TypedKey()
+    {
+        var table = await TestHelper.BuildTableAsync(
+            KeyEncoding.Ascii,
+            databaseConfigure: builder => builder.PageSize = 128,
+            tableConfigure: builder =>
+            {
+                for (var i = 0; i < 100; i++)
+                {
+                    builder.Append($"key{i:D3}", Encoding.ASCII.GetBytes($"value{i:D3}"));
+                }
+            });
+
+        using var result = table.GetRangeWithPrefix("key01");
+        // key010..key019 = 10 entries
+        Assert.That(result.Count, Is.EqualTo(10));
+    }
+
+    [Test]
+    public async Task GetRangeWithPrefixAsync_Basic()
+    {
+        var table = await TestHelper.BuildTableAsync(
+            KeyEncoding.Ascii,
+            databaseConfigure: builder => builder.PageSize = 128,
+            tableConfigure: builder =>
+            {
+                builder.Append("abc001"u8.ToArray(), "v1"u8.ToArray());
+                builder.Append("abc002"u8.ToArray(), "v2"u8.ToArray());
+                builder.Append("abc003"u8.ToArray(), "v3"u8.ToArray());
+                builder.Append("abd001"u8.ToArray(), "v4"u8.ToArray());
+            });
+
+        using var result = await table.GetRangeWithPrefixAsync("abc"u8.ToArray());
+        Assert.That(result.Count, Is.EqualTo(3));
+    }
+
+    [Test]
+    public async Task GetRangeWithPrefixAsync_TypedKey()
+    {
+        var table = await TestHelper.BuildTableAsync(
+            KeyEncoding.Ascii,
+            databaseConfigure: builder => builder.PageSize = 128,
+            tableConfigure: builder =>
+            {
+                for (var i = 0; i < 100; i++)
+                {
+                    builder.Append($"key{i:D3}", Encoding.ASCII.GetBytes($"value{i:D3}"));
+                }
+            });
+
+        using var result = await table.GetRangeWithPrefixAsync("key05");
+        // key050..key059 = 10 entries
+        Assert.That(result.Count, Is.EqualTo(10));
+    }
+
+    [Test]
     public async Task GetRange_TypedKey()
     {
         var table = await TestHelper.BuildTableAsync(

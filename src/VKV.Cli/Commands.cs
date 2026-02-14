@@ -168,6 +168,10 @@ public class Commands
                 ExecuteCount(table);
                 break;
 
+            case "prefix":
+                await ExecutePrefix(table, args);
+                break;
+
             default:
                 AnsiConsole.MarkupLine($"[red]Unknown command:[/] {command}");
                 AnsiConsole.MarkupLine("[dim]Type 'help' for available commands.[/]");
@@ -186,6 +190,7 @@ public class Commands
         table.AddRow("[green]scan[/] [[offset]] [[limit]]", "Scan key-value entries (default: offset=0, limit=20)");
         table.AddRow("[green]keys[/] [[offset]] [[limit]]", "Scan keys only");
         table.AddRow("[green]values[/] [[offset]] [[limit]]", "Scan values only");
+        table.AddRow("[green]prefix[/] <key> [[limit]]", "Search by key prefix (default: limit=10)");
         table.AddRow("[green]count[/]", "Count all entries");
         table.AddRow("[green]tables[/]", "List all tables");
         table.AddRow("[green]use[/] <table>", "Switch to another table");
@@ -453,6 +458,84 @@ public class Commands
         }
 
         AnsiConsole.MarkupLine($"[green](integer)[/] {count}");
+    }
+
+    static async Task ExecutePrefix(ReadOnlyTable table, string[] args)
+    {
+        if (args.Length == 0)
+        {
+            AnsiConsole.MarkupLine("[red]Usage:[/] prefix <key> [[limit]]");
+            return;
+        }
+
+        var keyStr = args[0];
+        var limit = 10;
+        if (args.Length > 1 && int.TryParse(args[1], out var parsedLimit))
+        {
+            limit = parsedLimit;
+        }
+
+        var buffer = ArrayPool<byte>.Shared.Rent(256);
+        int bytesWritten;
+        while (!table.KeyEncoding.TryEncode(keyStr, buffer, out bytesWritten))
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+            buffer = ArrayPool<byte>.Shared.Rent(buffer.Length * 2);
+        }
+        var prefixBytes = buffer.AsMemory(0, bytesWritten);
+
+        try
+        {
+            var iterator = table.CreateIterator();
+            if (!await iterator.TrySeekAsync(prefixBytes))
+            {
+                AnsiConsole.MarkupLine("[yellow](empty)[/]");
+                return;
+            }
+
+            var displayed = 0;
+            do
+            {
+                if (displayed >= limit) break;
+
+                var key = iterator.CurrentKey;
+                // Stop if key no longer starts with the prefix
+                if (key.Length < prefixBytes.Length ||
+                    !key.Span[..prefixBytes.Length].SequenceEqual(prefixBytes.Span))
+                {
+                    break;
+                }
+
+                var value = iterator.CurrentValue;
+
+                var keyDisplay = TryDecodeKey(key.Span, table.KeyEncoding);
+                var keyText = keyDisplay != null
+                    ? EscapeMarkup(Truncate(keyDisplay, 40))
+                    : $"(binary, {key.Length} bytes)";
+
+                var valueStr = TryDecodeValue(value.Span);
+                var valueDisplay = valueStr != null
+                    ? EscapeMarkup(Truncate(valueStr, 60))
+                    : $"(binary, {value.Length} bytes)";
+
+                AnsiConsole.MarkupLine($"[dim]{displayed + 1})[/] [blue]{keyText}[/] -> [green]{valueDisplay}[/]");
+                displayed++;
+            }
+            while (await iterator.MoveNextAsync());
+
+            if (displayed == 0)
+            {
+                AnsiConsole.MarkupLine("[yellow](empty)[/]");
+            }
+            else
+            {
+                AnsiConsole.MarkupLine($"[dim]Displayed {displayed} entries with prefix '{EscapeMarkup(keyStr)}'[/]");
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
     }
 
     static string[] ParseCommand(string input)
