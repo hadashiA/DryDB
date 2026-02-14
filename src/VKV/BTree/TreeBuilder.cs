@@ -109,24 +109,26 @@ static class TreeBuilder
             leaf.KeyValueBufferOffset += key.Length + value.Length;
         }
 
+        // Flush all non-top levels until no entries remain below the top.
+        // Rotation cascades can create new levels, so repeat until stable.
         while (true)
         {
-            var levelsAtStart = nodes.Count;
-            for (var level = 0; level < levelsAtStart - 1; level++)
+            var anyFlushed = false;
+            for (var level = 0; level < nodes.Count - 1; level++)
             {
                 if (nodes[level].EntryCount > 0)
                 {
                     await RotatePageAsync(outStream, nodes, level, true, wroteValuePointers, pageFilters, cancellationToken).ConfigureAwait(false);
+                    anyFlushed = true;
                 }
             }
+            if (!anyFlushed) break;
+        }
 
-            // write top-level
-            if (nodes[^1].EntryCount > 0)
-            {
-                await RotatePageAsync(outStream, nodes, nodes.Count - 1, false, wroteValuePointers, pageFilters, cancellationToken).ConfigureAwait(false);
-            }
-
-            if (nodes[^1].EntryCount <= 0) break;
+        // Write the root (top level)
+        if (nodes[^1].EntryCount > 0)
+        {
+            await RotatePageAsync(outStream, nodes, nodes.Count - 1, false, wroteValuePointers, pageFilters, cancellationToken).ConfigureAwait(false);
         }
 
         var rootPageNumber = nodes[^1].PrevNodeStartPageNumber; // latest root
