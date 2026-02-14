@@ -40,8 +40,8 @@ VKV is a read-only embedded B+Tree based key/value database, implemented pure C#
 - Iterator API
   - By manipulating the cursor, large areas can be accessed sequentially.
 - CLI tool
+- Read values by key prefix
 - TODO
-  - Read values by key prefix
   - Support more large blob (currentry 65536B is limit)
   - Sort order
 
@@ -339,6 +339,7 @@ During an interactive session, the following commands are available.
 | scan [offset] [limit] | Scan key-value entries (default: offset=0, limit=20) |
 | keys [offset] [limit] | Scan keys only |
 | values [offset] [limit] | Scan values only |
+| prefix \<key\> [limit] | Search by key prefix (default: limit=10) |
 | count | Count all entries |
 | tables | List all tables |
 | use <table> | Switch to another table |

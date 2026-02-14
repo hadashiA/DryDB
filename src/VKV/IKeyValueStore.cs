@@ -299,4 +299,103 @@ public static class KeyValueStoreExtensions
     {
         return kv.GetRangeAsync(key, key, sortOrder: sortOrder, cancellationToken: cancellationToken);
     }
+
+    public static RangeResult GetRangeWithPrefix(
+        this IKeyValueStore kv,
+        ReadOnlySpan<byte> key,
+        SortOrder sortOrder = SortOrder.Ascending)
+    {
+        if (key.Length <= 0) return RangeResult.Empty;
+
+        // Strip trailing 0xFF bytes to find the last incrementable byte
+        var endKeyLength = key.Length;
+        while (endKeyLength > 0 && key[endKeyLength - 1] == 0xFF)
+        {
+            endKeyLength--;
+        }
+
+        // All bytes are 0xFF — prefix matches everything from key onward
+        if (endKeyLength == 0)
+        {
+            return kv.GetRange(key, KeyRange.Unbound, sortOrder: sortOrder);
+        }
+
+        Span<byte> endKey = stackalloc byte[endKeyLength];
+        key[..endKeyLength].CopyTo(endKey);
+        endKey[endKeyLength - 1]++;
+        return kv.GetRange(key, endKey, endKeyExclusive: true, sortOrder: sortOrder);
+    }
+
+    public static RangeResult GetRangeWithPrefix<TKey>(
+        this IKeyValueStore kv,
+        TKey key,
+        SortOrder sortOrder = SortOrder.Ascending)
+        where TKey : IComparable<TKey>
+    {
+        var bufferLength = kv.KeyEncoding.GetMaxEncodedByteCount(key);
+        Span<byte> buffer = stackalloc byte[bufferLength];
+        kv.KeyEncoding.TryEncode(key, buffer, out var bytesWritten);
+        return kv.GetRangeWithPrefix(buffer[..bytesWritten], sortOrder);
+    }
+
+    public static async ValueTask<RangeResult> GetRangeWithPrefixAsync(
+        this IKeyValueStore kv,
+        ReadOnlyMemory<byte> key,
+        SortOrder sortOrder = SortOrder.Ascending,
+        CancellationToken cancellationToken = default)
+    {
+        if (key.Length <= 0) return RangeResult.Empty;
+
+        var keySpan = key.Span;
+
+        // Strip trailing 0xFF bytes
+        var endKeyLength = keySpan.Length;
+        while (endKeyLength > 0 && keySpan[endKeyLength - 1] == 0xFF)
+        {
+            endKeyLength--;
+        }
+
+        // All bytes are 0xFF — prefix matches everything from key onward
+        if (endKeyLength == 0)
+        {
+            return await kv.GetRangeAsync(key, KeyRange.Unbound, sortOrder: sortOrder, cancellationToken: cancellationToken);
+        }
+
+        var endKeyBuffer = ArrayPool<byte>.Shared.Rent(endKeyLength);
+        try
+        {
+            keySpan[..endKeyLength].CopyTo(endKeyBuffer);
+            endKeyBuffer[endKeyLength - 1]++;
+            return await kv.GetRangeAsync(key, endKeyBuffer.AsMemory(0, endKeyLength), endKeyExclusive: true, sortOrder: sortOrder, cancellationToken: cancellationToken);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(endKeyBuffer);
+        }
+    }
+
+    public static async ValueTask<RangeResult> GetRangeWithPrefixAsync<TKey>(
+        this IKeyValueStore kv,
+        TKey key,
+        SortOrder sortOrder = SortOrder.Ascending,
+        CancellationToken cancellationToken = default)
+        where TKey : IComparable<TKey>
+    {
+        var initialBufferSize = kv.KeyEncoding.GetMaxEncodedByteCount(key);
+        var buffer = ArrayPool<byte>.Shared.Rent(initialBufferSize);
+        int bytesWritten;
+        while (!kv.KeyEncoding.TryEncode(key, buffer, out bytesWritten))
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+            buffer = ArrayPool<byte>.Shared.Rent(buffer.Length * 2);
+        }
+        try
+        {
+            return await kv.GetRangeWithPrefixAsync(buffer.AsMemory(0, bytesWritten), sortOrder, cancellationToken);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
 }
