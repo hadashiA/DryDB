@@ -84,6 +84,7 @@ public class NonUniqueSecondaryIndexQuery : IKeyValueStore
                 duplicateKeyTree.PageCache.Load(pageRef.PageNumber);
             }
             result.Add(page, pageRef.Start, pageRef.Length);
+            page.Release();
         }
         return result;
     }
@@ -141,6 +142,7 @@ public class NonUniqueSecondaryIndexQuery : IKeyValueStore
                 await duplicateKeyTree.PageCache.LoadAsync(pageRef.PageNumber, cancellationToken);
             }
             result.Add(page, pageRef.Start, pageRef.Length);
+            page.Release();
         }
         return result;
     }

@@ -29,6 +29,7 @@ public class RangeResult : IDisposable, IEnumerable<ReadOnlyMemory<byte>>
 
     internal void Add(IPageEntry page, int start, int length)
     {
+        page.Retain();
         list.Add(page.Memory.Slice(start, length));
         referencePages.Add(page);
     }

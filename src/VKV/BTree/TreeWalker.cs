@@ -133,10 +133,10 @@ class TreeWalker
 
         while (true)
         {
-            var retain = false;
+            var currentPage = page;
             try
             {
-                var pageSpan = page.Memory.Span;
+                var pageSpan = currentPage.Memory.Span;
                 var header = NodeHeader.Parse(pageSpan);
                 if (header.Kind != NodeKind.Leaf)
                 {
@@ -160,9 +160,8 @@ class TreeWalker
                             return result;
                         }
                     }
-                    result.Add(page, pageOffset + keyLength, valueLength);
+                    result.Add(currentPage, pageOffset + keyLength, valueLength);
                     entryIndex++;
-                    retain = true;
                 }
 
                 // next node
@@ -180,7 +179,7 @@ class TreeWalker
             }
             finally
             {
-                if (!retain) page.Release();
+                currentPage.Release();
             }
         }
     }
@@ -203,10 +202,10 @@ class TreeWalker
 
         while (true)
         {
-            var retain = false;
+            var currentPage = page;
             try
             {
-                var pageSpan = page.Memory.Span;
+                var pageSpan = currentPage.Memory.Span;
                 var header = NodeHeader.Parse(pageSpan);
                 if (header.Kind != NodeKind.Leaf)
                 {
@@ -230,9 +229,8 @@ class TreeWalker
                             return result;
                         }
                     }
-                    result.Add(page, pageOffset + keyLength, valueLength);
+                    result.Add(currentPage, pageOffset + keyLength, valueLength);
                     entryIndex--;
-                    retain = true;
                 }
 
                 // previous node (left sibling)
@@ -251,7 +249,7 @@ class TreeWalker
             }
             finally
             {
-                if (!retain) page.Release();
+                currentPage.Release();
             }
         }
     }
@@ -312,10 +310,10 @@ class TreeWalker
 
         while (true)
         {
-            var retain = false;
+            var currentPage = page;
             try
             {
-                var pageSpan = page.Memory.Span;
+                var pageSpan = currentPage.Memory.Span;
                 var header = NodeHeader.Parse(pageSpan);
                 if (header.Kind != NodeKind.Leaf)
                 {
@@ -346,10 +344,9 @@ class TreeWalker
                             return result;
                         }
                     }
-                    result.Add(page, pageOffset + keyLength, valueLength);
+                    result.Add(currentPage, pageOffset + keyLength, valueLength);
 
                     entryIndex++;
-                    retain = true;
                 }
 
                 // next node
@@ -367,7 +364,7 @@ class TreeWalker
             }
             finally
             {
-                if (!retain) page.Release();
+                currentPage.Release();
             }
         }
     }
@@ -391,10 +388,10 @@ class TreeWalker
 
         while (true)
         {
-            var retain = false;
+            var currentPage = page;
             try
             {
-                var pageSpan = page.Memory.Span;
+                var pageSpan = currentPage.Memory.Span;
                 var header = NodeHeader.Parse(pageSpan);
                 if (header.Kind != NodeKind.Leaf)
                 {
@@ -425,10 +422,9 @@ class TreeWalker
                             return result;
                         }
                     }
-                    result.Add(page, pageOffset + keyLength, valueLength);
+                    result.Add(currentPage, pageOffset + keyLength, valueLength);
 
                     entryIndex--;
-                    retain = true;
                 }
 
                 // previous node (left sibling)
@@ -447,7 +443,7 @@ class TreeWalker
             }
             finally
             {
-                if (!retain) page.Release();
+                currentPage.Release();
             }
         }
     }

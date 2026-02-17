@@ -32,6 +32,7 @@ public interface IPageEntry
 {
     public PageNumber PageNumber { get; }
     public ReadOnlyMemory<byte> Memory { get; }
+    public void Retain();
     public void Release();
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

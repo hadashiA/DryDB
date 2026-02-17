@@ -82,6 +82,7 @@ public class SecondaryIndexQuery : IKeyValueStore
                 tree.PageCache.Load(pageRef.PageNumber);
             }
             result.Add(page, pageRef.Start, pageRef.Length);
+            page.Release();
         }
         return result;
     }
@@ -89,9 +90,9 @@ public class SecondaryIndexQuery : IKeyValueStore
     public async ValueTask<RangeResult> GetRangeAsync(
         ReadOnlyMemory<byte> startKey,
         ReadOnlyMemory<byte> endKey,
-        bool startKeyExclusive,
-        bool endKeyExclusive,
-        SortOrder sortOrder,
+        bool startKeyExclusive = false,
+        bool endKeyExclusive = false,
+        SortOrder sortOrder = SortOrder.Ascending,
         CancellationToken cancellationToken = default)
     {
         using var pageRefs = await tree.GetRangeAsync(
@@ -111,6 +112,7 @@ public class SecondaryIndexQuery : IKeyValueStore
                 await tree.PageCache.LoadAsync(pageRef.PageNumber, cancellationToken);
             }
             result.Add(page, pageRef.Start, pageRef.Length);
+            page.Release();
         }
         return result;
     }
