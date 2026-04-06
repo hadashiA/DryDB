@@ -134,13 +134,17 @@ _NCrunch*
 .idea
 
 ### Unity ###
-src/VKV.Unity/[Ll]ibrary/
-src/VKV.Unity/[Tt]emp/
-src/VKV.Unity/[Oo]bj/
-src/VKV.Unity/[Bb]uild/
-src/VKV.Unity/[Bb]uilds/
-src/VKV.Unity/Assets/AssetStoreTools*
-src/VKV.Unity/*.csproj
-src/VKV.Unity/*.sln
-src/VKV.Unity/UserSettings/*
-src/VKV.Unity/Assets/Packages/*
+src/DryDB.Unity/[Ll]ibrary/
+src/DryDB.Unity/[Tt]emp/
+src/DryDB.Unity/[Oo]bj/
+src/DryDB.Unity/[Bb]uild/
+src/DryDB.Unity/[Bb]uilds/
+src/DryDB.Unity/Assets/AssetStoreTools*
+src/DryDB.Unity/*.csproj
+src/DryDB.Unity/*.sln
+src/DryDB.Unity/UserSettings/*
+src/DryDB.Unity/Assets/Packages/*
+
+### Internal Unity Packages in bin/Debug ###
+!src/DryDB/bin/Debug/netstandard2.1/package.json
+!src/DryDB.Compression/bin/Debug/netstandard2.1/package.json

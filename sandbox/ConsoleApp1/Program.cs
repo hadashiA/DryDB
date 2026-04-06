@@ -1,10 +1,10 @@
 ﻿using System.Text;
 // using CsSqlite;
-using VKV;
+using DryDB;
 
-var directory = Directory.CreateTempSubdirectory("vkv_benchmarks");
+var directory = Directory.CreateTempSubdirectory("drydb_benchmarks");
 // var sqlitePath = Path.Combine(directory.FullName, "bench.sqlite");
-var filePath = Path.Combine(directory.FullName, "bench.vkv");
+var filePath = Path.Combine(directory.FullName, "bench.drydb");
 
 // Setup DryDB
 using (var builder = new DatabaseBuilder

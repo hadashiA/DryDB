@@ -1,0 +1,12 @@
+{
+    "name": "jp.hadashikick.drydb.internal",
+    "displayName": "DryDB Internal",
+    "author": { "name": "hadashiA", "url": "https://hadashikick.land" },
+    "version": "1.0.0",
+    "unity": "2022.2",
+    "description": "Internal Package of DryDB for development time.",
+    "keywords": [],
+    "license": "MIT",
+    "category": "Scripting",
+    "dependencies": {}
+}

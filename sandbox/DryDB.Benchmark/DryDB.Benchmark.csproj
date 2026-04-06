@@ -9,8 +9,13 @@
     </PropertyGroup>
 
     <ItemGroup>
+      <PackageReference Include="BenchmarkDotNet" Version="0.15.6" />
+      <PackageReference Include="CsSqlite" Version="1.1.0" />
+      <PackageReference Include="System.Data.SQLite" Version="2.0.2" />
+    </ItemGroup>
+
+    <ItemGroup>
       <ProjectReference Include="..\..\src\DryDB.Compression\DryDB.Compression.csproj" />
-      <ProjectReference Include="..\..\src\DryDB.MessagePack\DryDB.MessagePack.csproj" />
       <ProjectReference Include="..\..\src\DryDB\DryDB.csproj" />
     </ItemGroup>
 

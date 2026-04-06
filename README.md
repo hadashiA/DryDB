@@ -1,14 +1,14 @@
-# VKV
+# DryDB
 
-> [!WARNING]
-> This project is work in progress 
+> [!NOTE]
+> This project was formerly known as **VKV** and has been renamed to **DryDB**.
 
-VKV is a read-only embedded B+Tree based key/value database, implemented pure C#.
+DryDB is a read-only embedded B+Tree based key/value database, implemented pure C#.
 
 ```
 | Method             | Mean        | Error     | StdDev    |
 |------------------- |------------:|----------:|----------:|
-| VKV_FindByKey      |    37.57 us |  0.230 us |  0.120 us |
+| DryDB_FindByKey      |    37.57 us |  0.230 us |  0.120 us |
 | CsSqlite_FindByKey | 4,322.48 us | 44.492 us | 26.476 us |
 ```
 
@@ -52,10 +52,10 @@ VKV is a read-only embedded B+Tree based key/value database, implemented pure C#
 
 | Package         | Description                                            | Latest version                                                                                             |
 |:----------------|:-------------------------------------------------------|------------------------------------------------------------------------------------------------------------|
-| VKV             | Main package. Embedded key/value store implementation. | [![NuGet](https://img.shields.io/nuget/v/VKV)](https://www.nuget.org/packages/VKV)                         |
-| VKV.MessagePack | Plugin that handles value as MessagePack-Csharp.       | [![NuGet](https://img.shields.io/nuget/v/VKV.MessagePack)](https://www.nuget.org/packages/VKV.MessagePack) |
-| VKV.Compression | Plugin  for compressing binary data.                    | [![NuGet](https://img.shields.io/nuget/v/VKV.Compression)](https://www.nuget.org/packages/VKV.Compression) | 
-| VKV.UlidKey     | Plugin enabling the use of ulid as a key               | [![NuGet](https://img.shields.io/nuget/v/VKV.UlidKey)](https://www.nuget.org/packages/VKV.UlidKey) | 
+| DryDB             | Main package. Embedded key/value store implementation. | [![NuGet](https://img.shields.io/nuget/v/DryDB)](https://www.nuget.org/packages/DryDB)                         |
+| DryDB.MessagePack | Plugin that handles value as MessagePack-Csharp.       | [![NuGet](https://img.shields.io/nuget/v/DryDB.MessagePack)](https://www.nuget.org/packages/DryDB.MessagePack) |
+| DryDB.Compression | Plugin  for compressing binary data.                    | [![NuGet](https://img.shields.io/nuget/v/DryDB.Compression)](https://www.nuget.org/packages/DryDB.Compression) | 
+| DryDB.UlidKey     | Plugin enabling the use of ulid as a key               | [![NuGet](https://img.shields.io/nuget/v/DryDB.UlidKey)](https://www.nuget.org/packages/DryDB.UlidKey) | 
 
 ### Unity
 
@@ -63,10 +63,10 @@ VKV is a read-only embedded B+Tree based key/value database, implemented pure C#
 > Requirements: Unity 2022.2 or later.
 
 1. Install [NuGetForUnity](https://github.com/GlitchEnzo/NuGetForUnity).
-2. Install the VKV package and the optional plugins listed above using NuGetForUnity.
+2. Install the DryDB package and the optional plugins listed above using NuGetForUnity.
 3. Open the Package Manager window by selecting Window > Package Manager, then click on [+] > Add package from git URL and enter the following URL:
     - ```
-      https://github.com/hadashiA/VKV.git?path=src/VKV.Unity/Assets/VKV#0.1.0-preview
+      https://github.com/hadashiA/DryDB.git?path=src/DryDB.Unity/Assets/DryDB#0.1.0-preview
       ```
 
 ### Cli tool (optional)
@@ -74,7 +74,7 @@ VKV is a read-only embedded B+Tree based key/value database, implemented pure C#
 We distribute the CLI tool as a dotnet tool.
 
 ```bash
-$ dotnet tool install vkv.cli --prerelease
+$ dotnet tool install drydb.cli --prerelease
 ```
 
 See [CLI tool](#cli-tool) section for the usage.
@@ -104,12 +104,12 @@ var table2 = builder.CreateTable("quests", KeyEncoding.Int64LittleEndian);
 table2.Append(1, "hoge"u8.ToArray());
 
 // Build
-await builder.BuildToFileAsync("/path/to/bin.vkv");
+await builder.BuildToFileAsync("/path/to/bin.drydb");
 ```
 
 ```cs
 // Open DB
-var database = await ReadOnlyDatabase.OpenAsync("/pth/to/bin.vkv", new DatabaseLoadOptions
+var database = await ReadOnlyDatabase.OpenAsync("/pth/to/bin.drydb", new DatabaseLoadOptions
 {
     // Maximum number of pages to keep in memory
     // Basically, page cache x capacity serves as a rough estimate of memory usage.
@@ -183,7 +183,7 @@ table1.AddSecondaryIndex("category", isUnique: false, KeyEncoding.Ascii, (key, v
 });
 
 // Build
-await builder.BuildToFileAsync("/path/to/bin.vkv");
+await builder.BuildToFileAsync("/path/to/bin.drydb");
 ```
 
 ```cs
@@ -247,14 +247,14 @@ It loops from the current seek position to the end.
 We can store arbitrary byte sequences in value, but it would be convenient if you could store arbitrary C# types.
 
 
-VKV currently provides built-in serialization by the following libraries:
+DryDB currently provides built-in serialization by the following libraries:
 
 - [MessagePack-CSharp](https://github.com/MessagePack-CSharp/MessagePack-CSharp)
 - System.Text.Json (in progress)
 
-#### VKV.MessagePack
+#### DryDB.MessagePack
 
-Installing the `VKV.MessagePack` package enables the following features:
+Installing the `DryDB.MessagePack` package enables the following features:
 
 ```cs
 [MessagePackObject]
@@ -270,8 +270,8 @@ public class Person
 
 ``` cs
 // Create MessagePack value table...
-using VKV;
-using VKV.MessagePack;
+using DryDB;
+using DryDB.MessagePack;
 
 var databaseBuilder = new DatabaseBuilder();
 
@@ -288,15 +288,15 @@ tableBuilder.AddSecondaryIndex("age", false, KeyEncoding.Int64LittleEndian, (key
     return person.Age;
 });
 
-await builder.BuildToFileAsync("/path/to/db.vkv");
+await builder.BuildToFileAsync("/path/to/db.drydb");
 ```
 
 ``` cs
 // Load from messagepack values
-using VKV;
-using VKV.MessagePack;
+using DryDB;
+using DryDB.MessagePack;
 
-using var database = await ReadOnlyDatabase.OpenAync("/path/to/db.vkv");
+using var database = await ReadOnlyDatabase.OpenAync("/path/to/db.drydb");
 var table = database.GetTable("items")
     .AsMessagePackSerializable<Person>();
     
@@ -318,13 +318,13 @@ var database = await ReadOnlyDatabase.OpenFromFileAsync(filePath, new DatabaseLo
 ### Cli tool
 
 ```bash
-$ dotnet tool install vkv.cli --prerelease
+$ dotnet tool install drydb.cli --prerelease
 ```
 
 After install, specify the DB file and start an interactive session.
 
 ```bash
-$ dotnet vkv --file ./sample.vkv
+$ dotnet drydb --file ./sample.drydb
 ```
 
 <img src="./demo_cli.gif" alt="CLI Demo" width="50%" />
@@ -353,14 +353,14 @@ During an interactive session, the following commands are available.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              .vkv File Format                               │
+│                              .drydb File Format                               │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  ┌───────────────────────────────────────────────────────────────────────┐  │
 │  │                        Header (14 bytes)                              │  │
 │  ├───────────┬───────────┬───────────┬───────────────┬──────────────────┤  │
 │  │ MagicBytes│  Version  │FilterCount│   PageSize    │   TableCount     │  │
-│  │  "VKV\0"  │Major|Minor│  ushort   │     int       │     ushort       │  │
+│  │  "DRY\0"  │Major|Minor│  ushort   │     int       │     ushort       │  │
 │  │  4 bytes  │ 1b  | 1b  │  2 bytes  │    4 bytes    │     2 bytes      │  │
 │  └───────────┴───────────┴───────────┴───────────────┴──────────────────┘  │
 │                                    │                                        │

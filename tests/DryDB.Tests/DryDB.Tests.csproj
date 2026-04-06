@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <LangVersion>latest</LangVersion>
+        <Nullable>enable</Nullable>
+        <IsPackable>false</IsPackable>
+        <RootNamespace>DryDB.Tests</RootNamespace>
+        <ImplicitUsings>disable</ImplicitUsings>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="coverlet.collector" Version="6.0.2"/>
+        <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0"/>
+        <PackageReference Include="NUnit" Version="4.2.2"/>
+        <PackageReference Include="NUnit.Analyzers" Version="4.4.0"/>
+        <PackageReference Include="NUnit3TestAdapter" Version="4.6.0"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <Using Include="NUnit.Framework"/>
+    </ItemGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\..\src\DryDB.Compression\DryDB.Compression.csproj" />
+      <ProjectReference Include="..\..\src\DryDB.MessagePack\DryDB.MessagePack.csproj" />
+      <ProjectReference Include="..\..\src\DryDB.UlidKey\DryDB.UlidKey.csproj" />
+      <ProjectReference Include="..\..\src\DryDB\DryDB.csproj" />
+    </ItemGroup>
+
+</Project>
