@@ -1,0 +1,14 @@
+{
+    "name": "jp.hadashikick.drydb.compression.internal",
+    "displayName": "DryDB.Compression Internal",
+    "author": { "name": "hadashiA", "url": "https://hadashikick.land" },
+    "version": "1.0.0",
+    "unity": "2022.2",
+    "description": "Internal Package of DryDB.Compression for development time.",
+    "keywords": [],
+    "license": "MIT",
+    "category": "Scripting",
+    "dependencies": {
+        "jp.hadashikick.drydb.internal": "1.0.0"
+    }
+}
