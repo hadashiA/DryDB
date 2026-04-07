@@ -8,7 +8,7 @@ DryDB is a read-only embedded B+Tree based key/value database, implemented pure 
 ```
 | Method             | Mean        | Error     | StdDev    |
 |------------------- |------------:|----------:|----------:|
-| DryDB_FindByKey      |    37.57 us |  0.230 us |  0.120 us |
+| DryDB_FindByKey    |    37.57 us |  0.230 us |  0.120 us |
 | CsSqlite_FindByKey | 4,322.48 us | 44.492 us | 26.476 us |
 ```
 
