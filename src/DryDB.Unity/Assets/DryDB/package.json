@@ -1,7 +1,7 @@
 {
   "name": "jp.hadashikick.drydb.unity",
   "displayName": "DryDB.Unity",
-  "version": "0.6.0",
+  "version": "1.0.0",
   "unity": "2022.2",
   "description": "Ultra low memory-efficient optimized, read-only B+Tree queryable key/value store.",
   "keywords": ["db", "key/value store", "storage"],
