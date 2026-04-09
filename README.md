@@ -41,8 +41,8 @@ DryDB is a read-only embedded B+Tree based key/value database, implemented pure 
   - We can write custom filters in C#.
 - Iterator API
   - By manipulating the cursor, large areas can be accessed sequentially.
-- CLI tool- TODO
-  - Support more large blob (currentry 65536B is limit)
+- CLI tool
+- Support for large BLOBs. (Values exceeding 65,536 bytes are stored on a separated page.)
 
 ## Why read-only ?
 
