@@ -42,8 +42,7 @@ class UniqueKeyValueList(IKeyEncoding keyEncoding) : KeyValueList(keyEncoding)
 
     public override void Add(ReadOnlyMemory<byte> key, ReadOnlyMemory<byte> value)
     {
-        // ArgumentOutOfRangeException.ThrowIfGreaterThan(key.Length,  ushort.MaxValue);
-        // ArgumentOutOfRangeException.ThrowIfGreaterThan(value.Length, ushort.MaxValue);
+        if (key.Length > ushort.MaxValue) throw new ArgumentOutOfRangeException(nameof(key), "key too large");
 
         if (!list.TryAdd(key, value))
         {

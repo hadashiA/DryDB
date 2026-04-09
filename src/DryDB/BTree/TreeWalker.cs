@@ -22,6 +22,8 @@ class TreeWalker
 
     readonly IKeyEncoding comparer;
 
+    static readonly int BlobDataOffset = Unsafe.SizeOf<PageHeader>() + Unsafe.SizeOf<NodeHeader>();
+
     internal TreeWalker(
         PageNumber rootPageNumber,
         PageCache pageCache,
@@ -160,7 +162,16 @@ class TreeWalker
                             return result;
                         }
                     }
-                    result.Add(currentPage, pageOffset + keyLength, valueLength);
+                    if (LeafNodeReader.IsOverflow(valueLength))
+                    {
+                        var resolved = ResolveValue(currentPage, pageOffset + keyLength, valueLength);
+                        result.Add(resolved.Page, resolved.Start, resolved.Length);
+                        resolved.Page.Release();
+                    }
+                    else
+                    {
+                        result.Add(currentPage, pageOffset + keyLength, valueLength);
+                    }
                     entryIndex++;
                 }
 
@@ -229,7 +240,16 @@ class TreeWalker
                             return result;
                         }
                     }
-                    result.Add(currentPage, pageOffset + keyLength, valueLength);
+                    if (LeafNodeReader.IsOverflow(valueLength))
+                    {
+                        var resolved = ResolveValue(currentPage, pageOffset + keyLength, valueLength);
+                        result.Add(resolved.Page, resolved.Start, resolved.Length);
+                        resolved.Page.Release();
+                    }
+                    else
+                    {
+                        result.Add(currentPage, pageOffset + keyLength, valueLength);
+                    }
                     entryIndex--;
                 }
 
@@ -313,38 +333,41 @@ class TreeWalker
             var currentPage = page;
             try
             {
-                var pageSpan = currentPage.Memory.Span;
-                var header = NodeHeader.Parse(pageSpan);
+                var header = NodeHeader.Parse(currentPage.Memory.Span);
                 if (header.Kind != NodeKind.Leaf)
                 {
                     throw new InvalidOperationException("Invalid node kind");
                 }
 
-                var leafNode = new LeafNodeReader(pageSpan, header.EntryCount);
                 while (entryIndex < header.EntryCount)
                 {
-                    leafNode.GetAt(
-                        entryIndex,
-                        out var pageOffset,
-                        out var keyLength,
-                        out var valueLength);
+                    int pageOffset;
+                    ushort keyLength, valueLength;
+                    new LeafNodeReader(currentPage.Memory.Span, header.EntryCount)
+                        .GetAt(entryIndex, out pageOffset, out keyLength, out valueLength);
 
                     // check end key
                     if (!endKey.IsEmpty)
                     {
-                        var key = MemoryMarshal.CreateReadOnlySpan(
-                            ref Unsafe.Add(
-                                ref MemoryMarshal.GetReference(pageSpan),
-                                pageOffset),
-                            keyLength);
-
-                        var compared = KeyEncoding.Compare(key, endKey.Span);
+                        var compared = KeyEncoding.Compare(
+                            currentPage.Memory.Slice(pageOffset, keyLength),
+                            endKey);
                         if (compared > 0 || (endKeyExclusive && compared == 0))
                         {
                             return result;
                         }
                     }
-                    result.Add(currentPage, pageOffset + keyLength, valueLength);
+                    if (LeafNodeReader.IsOverflow(valueLength))
+                    {
+                        var resolved = await ResolveValueAsync(currentPage, pageOffset + keyLength, valueLength, cancellationToken)
+                            .ConfigureAwait(false);
+                        result.Add(resolved.Page, resolved.Start, resolved.Length);
+                        resolved.Page.Release();
+                    }
+                    else
+                    {
+                        result.Add(currentPage, pageOffset + keyLength, valueLength);
+                    }
 
                     entryIndex++;
                 }
@@ -391,38 +414,41 @@ class TreeWalker
             var currentPage = page;
             try
             {
-                var pageSpan = currentPage.Memory.Span;
-                var header = NodeHeader.Parse(pageSpan);
+                var header = NodeHeader.Parse(currentPage.Memory.Span);
                 if (header.Kind != NodeKind.Leaf)
                 {
                     throw new InvalidOperationException("Invalid node kind");
                 }
 
-                var leafNode = new LeafNodeReader(pageSpan, header.EntryCount);
                 while (entryIndex >= 0)
                 {
-                    leafNode.GetAt(
-                        entryIndex,
-                        out var pageOffset,
-                        out var keyLength,
-                        out var valueLength);
+                    int pageOffset;
+                    ushort keyLength, valueLength;
+                    new LeafNodeReader(currentPage.Memory.Span, header.EntryCount)
+                        .GetAt(entryIndex, out pageOffset, out keyLength, out valueLength);
 
                     // check start key (lower bound for descending)
                     if (!startKey.IsEmpty)
                     {
-                        var key = MemoryMarshal.CreateReadOnlySpan(
-                            ref Unsafe.Add(
-                                ref MemoryMarshal.GetReference(pageSpan),
-                                pageOffset),
-                            keyLength);
-
-                        var compared = KeyEncoding.Compare(key, startKey.Span);
+                        var compared = KeyEncoding.Compare(
+                            currentPage.Memory.Slice(pageOffset, keyLength),
+                            startKey);
                         if (compared < 0 || (startKeyExclusive && compared == 0))
                         {
                             return result;
                         }
                     }
-                    result.Add(currentPage, pageOffset + keyLength, valueLength);
+                    if (LeafNodeReader.IsOverflow(valueLength))
+                    {
+                        var resolved = await ResolveValueAsync(currentPage, pageOffset + keyLength, valueLength, cancellationToken)
+                            .ConfigureAwait(false);
+                        result.Add(resolved.Page, resolved.Start, resolved.Length);
+                        resolved.Page.Release();
+                    }
+                    else
+                    {
+                        result.Add(currentPage, pageOffset + keyLength, valueLength);
+                    }
 
                     entryIndex--;
                 }
@@ -651,6 +677,49 @@ class TreeWalker
         }
     }
 
+    internal PageSlice ResolveValue(IPageEntry leafPage, int valueOffset, ushort valueLength)
+    {
+        if (!LeafNodeReader.IsOverflow(valueLength))
+        {
+            return new PageSlice(leafPage, valueOffset, valueLength);
+        }
+
+        // Read the blob page number from the leaf's inline payload (8 bytes)
+        var blobPageNumberValue = Unsafe.ReadUnaligned<long>(
+            ref Unsafe.Add(ref MemoryMarshal.GetReference(leafPage.Memory.Span), valueOffset));
+        var blobPageNumber = new PageNumber(blobPageNumberValue);
+
+        IPageEntry blobPage;
+        while (!PageCache.TryGet(blobPageNumber, out blobPage))
+        {
+            PageCache.Load(blobPageNumber);
+        }
+
+        var blobLength = blobPage.GetLength() - BlobDataOffset;
+        return new PageSlice(blobPage, BlobDataOffset, blobLength);
+    }
+
+    internal async ValueTask<PageSlice> ResolveValueAsync(IPageEntry leafPage, int valueOffset, ushort valueLength, CancellationToken ct)
+    {
+        if (!LeafNodeReader.IsOverflow(valueLength))
+        {
+            return new PageSlice(leafPage, valueOffset, valueLength);
+        }
+
+        var blobPageNumberValue = Unsafe.ReadUnaligned<long>(
+            ref Unsafe.Add(ref MemoryMarshal.GetReference(leafPage.Memory.Span), valueOffset));
+        var blobPageNumber = new PageNumber(blobPageNumberValue);
+
+        IPageEntry blobPage;
+        while (!PageCache.TryGet(blobPageNumber, out blobPage))
+        {
+            await PageCache.LoadAsync(blobPageNumber, ct).ConfigureAwait(false);
+        }
+
+        var blobLength = blobPage.GetLength() - BlobDataOffset;
+        return new PageSlice(blobPage, BlobDataOffset, blobLength);
+    }
+
     internal bool TryFindFrom(
         PageNumber from,
         scoped ReadOnlySpan<byte> key,
@@ -692,7 +761,16 @@ class TreeWalker
                 var leafNode = new LeafNodeReader(pageSpan, header.EntryCount);
                 if (leafNode.TryFindValue(key, KeyEncoding, out entryIndex, out var valueOffset, out var valueLength))
                 {
-                    value = new PageSlice(page, valueOffset, valueLength);
+                    if (LeafNodeReader.IsOverflow(valueLength))
+                    {
+                        var resolved = ResolveValue(page, valueOffset, valueLength);
+                        page.Release();
+                        value = resolved;
+                    }
+                    else
+                    {
+                        value = new PageSlice(page, valueOffset, valueLength);
+                    }
                     return true;
                 }
 
@@ -763,44 +841,51 @@ class TreeWalker
 
     internal SingleValueResult GetMinValue()
     {
-        var pageNumber = RootPageNumber;
-        while (true)
+        var minLeaf = GetMinLeaf();
+        if (!minLeaf.HasValue)
         {
-            IPageEntry page;
-            while (!PageCache.TryGet(pageNumber, out page))
-            {
-                PageCache.Load(pageNumber);
-            }
-
-            var pageSpan = page.Memory.Span;
-            var header = NodeHeader.Parse(pageSpan);
-            if (header.Kind == NodeKind.Internal)
-            {
-                if (header.EntryCount <= 0)
-                {
-                    return SingleValueResult.Empty;
-                }
-
-                var internalNode = new InternalNodeReader(pageSpan, header.EntryCount);
-                internalNode.GetAt(0, out _, out pageNumber);
-                page.Release();
-            }
-            else // Leaf
-            {
-                if (header.EntryCount <= 0)
-                {
-                    return SingleValueResult.Empty;
-                }
-
-                var leafNode = new LeafNodeReader(pageSpan, header.EntryCount);
-                leafNode.GetAt(0, out var pageOffset, out var keyLength, out var valueLength);
-                var pageSlice = new PageSlice(page, pageOffset + keyLength, valueLength);
-                return new SingleValueResult(pageSlice, true);
-            }
+            return SingleValueResult.Empty;
         }
+
+        var (page, entryIndex) = minLeaf.Value;
+        var leafNode = new LeafNodeReader(page.Memory.Span, NodeHeader.Parse(page.Memory.Span).EntryCount);
+        leafNode.GetAt(entryIndex, out var pageOffset, out var keyLength, out var valueLength);
+
+        if (LeafNodeReader.IsOverflow(valueLength))
+        {
+            var resolved = ResolveValue(page, pageOffset + keyLength, valueLength);
+            page.Release();
+            return new SingleValueResult(resolved, true);
+        }
+
+        var pageSlice = new PageSlice(page, pageOffset + keyLength, valueLength);
+        return new SingleValueResult(pageSlice, true);
     }
 
     internal SingleValueResult GetMaxValue()
+    {
+        var maxLeaf = GetMaxValueLeaf();
+        if (!maxLeaf.HasValue)
+        {
+            return SingleValueResult.Empty;
+        }
+
+        var (page, entryIndex) = maxLeaf.Value;
+        var leafNode = new LeafNodeReader(page.Memory.Span, NodeHeader.Parse(page.Memory.Span).EntryCount);
+        leafNode.GetAt(entryIndex, out var pageOffset, out var keyLength, out var valueLength);
+
+        if (LeafNodeReader.IsOverflow(valueLength))
+        {
+            var resolved = ResolveValue(page, pageOffset + keyLength, valueLength);
+            page.Release();
+            return new SingleValueResult(resolved, true);
+        }
+
+        var pageSlice = new PageSlice(page, pageOffset + keyLength, valueLength);
+        return new SingleValueResult(pageSlice, true);
+    }
+
+    internal (IPageEntry Page, int EntryIndex)? GetMinLeaf()
     {
         var pageNumber = RootPageNumber;
         while (true)
@@ -817,24 +902,22 @@ class TreeWalker
             {
                 if (header.EntryCount <= 0)
                 {
-                    return SingleValueResult.Empty;
+                    page.Release();
+                    return null;
                 }
 
                 var internalNode = new InternalNodeReader(pageSpan, header.EntryCount);
-                internalNode.GetAt(header.EntryCount - 1, out _, out pageNumber);
+                internalNode.GetAt(0, out _, out pageNumber);
                 page.Release();
             }
             else // Leaf
             {
                 if (header.EntryCount <= 0)
                 {
-                    return SingleValueResult.Empty;
+                    page.Release();
+                    return null;
                 }
-
-                var leafNode = new LeafNodeReader(pageSpan, header.EntryCount);
-                leafNode.GetAt(header.EntryCount - 1, out var pageOffset, out var keyLength, out var valueLength);
-                var pageSlice = new PageSlice(page, pageOffset + keyLength, valueLength);
-                return new SingleValueResult(pageSlice, true);
+                return (page, 0);
             }
         }
     }

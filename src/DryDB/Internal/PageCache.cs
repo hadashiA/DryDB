@@ -157,7 +157,7 @@ public sealed class PageCache : IDisposable
 
     public void Load(PageNumber pageNumber)
     {
-        var buffer = pageLoader.ReadPage(pageNumber);
+        var buffer = pageLoader.ReadPage(pageNumber, filters);
         AddEntry(pageNumber, buffer);
     }
 

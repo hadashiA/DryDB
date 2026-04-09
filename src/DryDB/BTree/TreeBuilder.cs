@@ -20,6 +20,7 @@ sealed class NodeEntry(int pageSize)
 {
     public readonly byte[] KeyValueBuffer = new byte[pageSize];
     public readonly List<(int KeyLength, int ValueLength)> KeyValueSizes = [];
+    public readonly List<PageRef?> OverflowPageRefs = [];
     public int KeyValueBufferOffset;
     public PageNumber PrevNodeStartPageNumber = PageNumber.Empty;
     public ReadOnlyMemory<byte>? FirstKey;
@@ -31,6 +32,7 @@ sealed class NodeEntry(int pageSize)
     {
         Array.Clear(KeyValueBuffer, 0, KeyValueBuffer.Length);
         KeyValueSizes.Clear();
+        OverflowPageRefs.Clear();
         KeyValueBufferOffset = 0;
         PrevNodeStartPageNumber = PageNumber.Empty;
         FirstKey = null;
@@ -73,40 +75,74 @@ static class TreeBuilder
                 leaf.FirstKey = key;
             }
 
-            var needs = PageHeaderSize + (leaf.EntryCount + 1) * (sizeof(int) + sizeof(ushort) * 2) +
+            var isOverflow = false;
+            var inlineNeeds = PageHeaderSize + (leaf.EntryCount + 1) * (sizeof(int) + sizeof(ushort) * 2) +
                         leaf.KeyValueBufferOffset + key.Length + value.Length;
-            if (needs > pageSize)
+            if (inlineNeeds > pageSize)
             {
-                await RotatePageAsync(outStream
-                    , nodes,
-                    0,
-                    true,
-                    wroteValuePointers,
-                    pageFilters,
-                    cancellationToken).ConfigureAwait(false);
-                if (nodes[0].EntryCount <= 0)
+                // Check if it fits as overflow (key + 8-byte PageNumber.Value)
+                var overflowNeeds = PageHeaderSize + (leaf.EntryCount + 1) * (sizeof(int) + sizeof(ushort) * 2) +
+                            leaf.KeyValueBufferOffset + key.Length + sizeof(long);
+                if (overflowNeeds > pageSize)
                 {
-                    nodes[0].FirstKey = key;
+                    // Current page is full even for overflow; rotate
+                    await RotatePageAsync(outStream, nodes, 0, true, wroteValuePointers, pageFilters, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (nodes[0].EntryCount <= 0)
+                    {
+                        nodes[0].FirstKey = key;
+                    }
+                    leaf = nodes[0];
                 }
-                leaf = nodes[0];
+
+                // Recalculate after potential rotation
+                inlineNeeds = PageHeaderSize + (leaf.EntryCount + 1) * (sizeof(int) + sizeof(ushort) * 2) +
+                            leaf.KeyValueBufferOffset + key.Length + value.Length;
+                if (inlineNeeds > pageSize)
+                {
+                    isOverflow = true;
+                }
             }
 
-            ref var keyValueBufferReference = ref GetArrayDataReference(leaf.KeyValueBuffer);
-            keyValueBufferReference = ref Unsafe.Add(ref keyValueBufferReference, leaf.KeyValueBufferOffset);
+            // Value length that equals the overflow sentinel must be stored as overflow
+            // to avoid ambiguity during read.
+            if (!isOverflow && value.Length == LeafNodeReader.OverflowSentinel)
+            {
+                isOverflow = true;
+            }
 
+            // Copy key into buffer
             Unsafe.CopyBlockUnaligned(
-                ref keyValueBufferReference,
+                ref Unsafe.Add(ref GetArrayDataReference(leaf.KeyValueBuffer), leaf.KeyValueBufferOffset),
                 ref MemoryMarshal.GetReference(key.Span),
                 (uint)key.Length);
-            keyValueBufferReference = ref Unsafe.Add(ref keyValueBufferReference, key.Length);
 
-            Unsafe.CopyBlockUnaligned(
-                ref keyValueBufferReference,
-                ref MemoryMarshal.GetReference(value.Span),
-                (uint)value.Length);
+            if (isOverflow)
+            {
+                // Write blob page and store PageNumber.Value as inline payload
+                var blobPageNumber = await WriteBlobPageAsync(outStream, value, pageFilters, cancellationToken)
+                    .ConfigureAwait(false);
 
-            leaf.KeyValueSizes.Add((key.Length, value.Length));
-            leaf.KeyValueBufferOffset += key.Length + value.Length;
+                Unsafe.WriteUnaligned(
+                    ref Unsafe.Add(ref GetArrayDataReference(leaf.KeyValueBuffer), leaf.KeyValueBufferOffset + key.Length),
+                    blobPageNumber.Value);
+
+                leaf.KeyValueSizes.Add((key.Length, sizeof(long)));
+                leaf.OverflowPageRefs.Add(new PageRef(blobPageNumber, PageHeaderSize, value.Length));
+                leaf.KeyValueBufferOffset += key.Length + sizeof(long);
+            }
+            else
+            {
+                // Inline value
+                Unsafe.CopyBlockUnaligned(
+                    ref Unsafe.Add(ref GetArrayDataReference(leaf.KeyValueBuffer), leaf.KeyValueBufferOffset + key.Length),
+                    ref MemoryMarshal.GetReference(value.Span),
+                    (uint)value.Length);
+
+                leaf.KeyValueSizes.Add((key.Length, value.Length));
+                leaf.OverflowPageRefs.Add(null);
+                leaf.KeyValueBufferOffset += key.Length + value.Length;
+            }
         }
 
         // Flush all non-top levels until no entries remain below the top.
@@ -137,6 +173,45 @@ static class TreeBuilder
             RootPageNumber = rootPageNumber,
             WroteValueRefs = wroteValuePointers
         };
+    }
+
+    static async ValueTask<PageNumber> WriteBlobPageAsync(
+        Stream outStream,
+        ReadOnlyMemory<byte> value,
+        IReadOnlyList<IPageFilter>? filters,
+        CancellationToken cancellationToken)
+    {
+        var blobPageNumber = new PageNumber(outStream.Position);
+        var pageLength = PageHeaderSize + value.Length;
+
+        var buffer = ArrayPool<byte>.Shared.Rent(pageLength);
+        ref var ptr = ref GetArrayDataReference(buffer);
+
+        // write page header
+        Unsafe.WriteUnaligned(ref ptr, new PageHeader { PageSize = pageLength });
+        ptr = ref Unsafe.Add(ref ptr, Unsafe.SizeOf<PageHeader>());
+
+        // write node header (Leaf, EntryCount=0)
+        Unsafe.WriteUnaligned(ref ptr, new NodeHeader
+        {
+            Kind = NodeKind.Leaf,
+            EntryCount = 0,
+            LeftSiblingPageNumber = PageNumber.Empty,
+            RightSiblingPageNumber = PageNumber.Empty
+        });
+        ptr = ref Unsafe.Add(ref ptr, Unsafe.SizeOf<NodeHeader>());
+
+        // write value data
+        Unsafe.CopyBlockUnaligned(
+            ref ptr,
+            ref MemoryMarshal.GetReference(value.Span),
+            (uint)value.Length);
+
+        await WritePageWithFiltersAsync(outStream, buffer, pageLength, filters, cancellationToken)
+            .ConfigureAwait(false);
+
+        ArrayPool<byte>.Shared.Return(buffer);
+        return blobPageNumber;
     }
 
     static async ValueTask RotatePageAsync(
@@ -226,6 +301,7 @@ static class TreeBuilder
         Unsafe.WriteUnaligned(ref parentKeyValueBufferReference, currentPos.Value);
 
         parent.KeyValueSizes.Add((sepKey.Length, sizeof(long)));
+        parent.OverflowPageRefs.Add(null); // internal nodes never overflow
         parent.KeyValueBufferOffset += sepKey.Length + sizeof(long);
 
         currentNode.Reset();
@@ -269,11 +345,21 @@ static class TreeBuilder
 
         var payloadOffset = PageHeaderSize + node.EntryCount * metaSize;
 
-        foreach (var (keyLength, valueLength) in node.KeyValueSizes)
+        for (var i = 0; i < node.KeyValueSizes.Count; i++)
         {
+            var (keyLength, valueLength) = node.KeyValueSizes[i];
+
             if (nodeHeader.Kind == NodeKind.Leaf)
             {
-                wroteValueRefs.Add(new PageRef(currentPageNumber, payloadOffset + keyLength, valueLength));
+                var overflowRef = node.OverflowPageRefs[i];
+                if (overflowRef.HasValue)
+                {
+                    wroteValueRefs.Add(overflowRef.Value);
+                }
+                else
+                {
+                    wroteValueRefs.Add(new PageRef(currentPageNumber, payloadOffset + keyLength, valueLength));
+                }
             }
 
             Unsafe.WriteUnaligned(ref ptr, payloadOffset);
@@ -284,8 +370,10 @@ static class TreeBuilder
 
             if (nodeHeader.Kind == NodeKind.Leaf)
             {
-                // variable length value
-                Unsafe.WriteUnaligned(ref ptr, (ushort)valueLength);
+                var overflowRef = node.OverflowPageRefs[i];
+                // variable length value (sentinel for overflow)
+                Unsafe.WriteUnaligned(ref ptr,
+                    overflowRef.HasValue ? LeafNodeReader.OverflowSentinel : (ushort)valueLength);
                 ptr = ref Unsafe.Add(ref ptr, sizeof(ushort));
             }
             payloadOffset += keyLength + valueLength;
@@ -295,6 +383,23 @@ static class TreeBuilder
         ref var keyValuesReference = ref GetArrayDataReference(node.KeyValueBuffer);
         Unsafe.CopyBlockUnaligned(ref ptr, ref keyValuesReference, (uint)node.KeyValueBufferOffset);
 
+        await WritePageWithFiltersAsync(outStream, buffer, pageLength, filters, cancellationToken)
+            .ConfigureAwait(false);
+
+        ArrayPool<byte>.Shared.Return(buffer);
+
+        await outStream.FlushAsync(cancellationToken);
+
+        // TODO: alignment
+    }
+
+    static async ValueTask WritePageWithFiltersAsync(
+        Stream outStream,
+        byte[] buffer,
+        int pageLength,
+        IReadOnlyList<IPageFilter>? filters,
+        CancellationToken cancellationToken)
+    {
         if (filters is { Count: > 0 })
         {
             var source = buffer.AsSpan(0, pageLength);
@@ -345,10 +450,5 @@ static class TreeBuilder
         {
             await outStream.WriteAsync(buffer.AsMemory(0, pageLength), cancellationToken);
         }
-        ArrayPool<byte>.Shared.Return(buffer);
-
-        await outStream.FlushAsync(cancellationToken);
-
-        // TODO: alignment
     }
 }

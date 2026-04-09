@@ -41,6 +41,9 @@ public class RangeIterator :
     {
         get
         {
+            currentOverflowPage?.Release();
+            currentOverflowPage = null;
+
             var header = NodeHeader.Parse(currentPage!.Memory.Span);
             if (header.Kind != NodeKind.Leaf)
             {
@@ -48,6 +51,14 @@ public class RangeIterator :
             }
             var reader = new LeafNodeReader(currentPage.Memory.Span, header.EntryCount);
             reader.GetAt(currentEntryIndex, out var pageOffset, out var keyLength, out var valueLength);
+
+            if (LeafNodeReader.IsOverflow(valueLength))
+            {
+                var resolved = treeWalker.ResolveValue(currentPage, pageOffset + keyLength, valueLength);
+                currentOverflowPage = resolved.Page;
+                return resolved.Page.Memory.Slice(resolved.Start, resolved.Length);
+            }
+
             return currentPage.Memory.Slice(pageOffset + keyLength, valueLength);
         }
     }
@@ -58,6 +69,7 @@ public class RangeIterator :
     readonly TreeWalker treeWalker;
     readonly IteratorDirection direction;
     IPageEntry? currentPage;
+    IPageEntry? currentOverflowPage;
     int currentEntryIndex;
 
     internal RangeIterator(
@@ -85,12 +97,16 @@ public class RangeIterator :
 
     public void Dispose()
     {
+        currentOverflowPage?.Release();
+        currentOverflowPage = null;
         currentPage?.Release();
         currentPage = null;
     }
 
     public void Reset()
     {
+        currentOverflowPage?.Release();
+        currentOverflowPage = null;
         currentPage?.Release();
         currentPage = null;
     }
@@ -98,24 +114,30 @@ public class RangeIterator :
     public bool TrySeek(ReadOnlySpan<byte> key)
     {
         PageNumber? nextPageNumber = treeWalker.RootPageNumber;
-        PageSlice pageSlice;
+        IPageEntry page;
+        int entryIndex;
 
-        while (!treeWalker.TryFindFrom(
+        while (!treeWalker.TrySearch(
                    nextPageNumber.Value,
                    key,
-                   out currentEntryIndex,
-                   out pageSlice,
+                   SearchOperator.Equal,
+                   out page,
+                   out entryIndex,
                    out nextPageNumber))
         {
             if (!nextPageNumber.HasValue) return false;
             treeWalker.PageCache.Load(nextPageNumber.Value);
         }
 
-        if (currentPage != pageSlice.Page)
+        currentOverflowPage?.Release();
+        currentOverflowPage = null;
+
+        if (currentPage != page)
         {
             currentPage?.Release();
-            currentPage = pageSlice.Page;
+            currentPage = page;
         }
+        currentEntryIndex = entryIndex;
         return true;
     }
 
@@ -124,24 +146,30 @@ public class RangeIterator :
         CancellationToken cancellationToken = default)
     {
         PageNumber? nextPageNumber = treeWalker.RootPageNumber;
-        PageSlice pageSlice;
+        IPageEntry page;
+        int entryIndex;
 
-        while (!treeWalker.TryFindFrom(
+        while (!treeWalker.TrySearch(
                    nextPageNumber.Value,
                    key.Span,
-                   out currentEntryIndex,
-                   out pageSlice,
+                   SearchOperator.Equal,
+                   out page,
+                   out entryIndex,
                    out nextPageNumber))
         {
             if (!nextPageNumber.HasValue) return false;
             await treeWalker.PageCache.LoadAsync(nextPageNumber.Value, cancellationToken);
         }
 
-        if (currentPage != pageSlice.Page)
+        currentOverflowPage?.Release();
+        currentOverflowPage = null;
+
+        if (currentPage != page)
         {
             currentPage?.Release();
-            currentPage = pageSlice.Page;
+            currentPage = page;
         }
+        currentEntryIndex = entryIndex;
         return true;
     }
 
@@ -157,13 +185,13 @@ public class RangeIterator :
         // first item
         if (currentPage is null)
         {
-            var minimumValue = treeWalker.GetMinValue();
-            if (!minimumValue.HasValue)
+            var minLeaf = treeWalker.GetMinLeaf();
+            if (!minLeaf.HasValue)
             {
                 return false;
             }
 
-            currentPage = minimumValue.Value.Page;
+            currentPage = minLeaf.Value.Page;
             currentEntryIndex = 0;
             return true;
         }
@@ -268,13 +296,14 @@ public class RangeIterator :
         // first item
         if (currentPage is null)
         {
-            var minimumValue = treeWalker.GetMinValue();
-            if (!minimumValue.HasValue)
+            var minLeaf = treeWalker.GetMinLeaf();
+            if (!minLeaf.HasValue)
             {
                 return false;
             }
 
-            currentPage = minimumValue.Value.Page;
+            currentPage = minLeaf.Value.Page;
+            currentEntryIndex = 0;
             return true;
         }
 

@@ -13,6 +13,11 @@ namespace DryDB.BTree;
 /// </remarks>
 readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount)
 {
+    internal const ushort OverflowSentinel = ushort.MaxValue; // 0xFFFF
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static bool IsOverflow(ushort valueLength) => valueLength == OverflowSentinel;
+
     [StructLayout(LayoutKind.Explicit, Size = 6, Pack = 1)]
     struct NodeEntryMeta
     {
