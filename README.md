@@ -346,9 +346,6 @@ During an interactive session, the following commands are available.
 | help                    | Show this help |
 | quit                    | Exit the session |
 
-
-
-
 ## Binary Format
 
 ```
