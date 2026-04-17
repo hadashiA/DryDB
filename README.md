@@ -66,7 +66,7 @@ DryDB is a read-only embedded B+Tree based key/value database, implemented pure 
 2. Install the DryDB package and the optional plugins listed above using NuGetForUnity.
 3. Open the Package Manager window by selecting Window > Package Manager, then click on [+] > Add package from git URL and enter the following URL:
     - ```
-      https://github.com/hadashiA/DryDB.git?path=src/DryDB.Unity/Assets/DryDB#0.1.0-preview
+      https://github.com/hadashiA/DryDB.git?path=src/DryDB.Unity/Assets/DryDB#1.0.1
       ```
 
 ### Cli tool (optional)
@@ -74,7 +74,7 @@ DryDB is a read-only embedded B+Tree based key/value database, implemented pure 
 We distribute the CLI tool as a dotnet tool.
 
 ```bash
-$ dotnet tool install drydb.cli --prerelease
+$ dotnet tool install drydb.cli
 ```
 
 See [CLI tool](#cli-tool) section for the usage.
