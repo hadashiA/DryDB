@@ -34,8 +34,9 @@ public class ReadOnlyTableTest
         Assert.That(result2.HasValue, Is.False);
     }
 
-    [Test]
-    public async Task Get_Concurrent_UnderEvictionPressure()
+    [TestCase(PageReclamation.Gc)]
+    [TestCase(PageReclamation.ReferenceCounted)]
+    public async Task Get_Concurrent_UnderEvictionPressure(PageReclamation pageReclamation)
     {
         // 8-page cache against a table spanning dozens of pages, so that reads
         // constantly race with eviction.
@@ -44,6 +45,7 @@ public class ReadOnlyTableTest
             loadOptions: new DatabaseLoadOptions
             {
                 CacheSize = 1024,
+                PageReclamation = pageReclamation,
             },
             databaseConfigure: builder => builder.PageSize = 128,
             tableConfigure: builder =>

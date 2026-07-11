@@ -31,28 +31,30 @@ public sealed class PageCache : IDisposable
                 buffer = value;
                 // cache the Memory to avoid the virtual IMemoryOwner<byte>.Memory call per access
                 memory = value?.Memory ?? default;
-                // Array-backed buffers are reclaimed by the GC once nothing references
-                // the entry, so they need no reference counting at all — reads become
-                // interlocked-free. Buffers over unmanaged memory (e.g. Unity's
-                // NativeArray loader) must be disposed deterministically and keep the
-                // refcount protocol.
-                requiresDispose = value != null && !MemoryMarshal.TryGetArray(memory, out _);
             }
         }
-        public QueueTag Tag { get; set; }
 
-        public bool RequiresDispose
+        /// <summary>
+        /// When false, the buffer is left to the GC once nothing references the entry, and
+        /// all reference counting is a no-op — reads become interlocked-free. Buffers over
+        /// unmanaged memory (e.g. Unity's NativeArray loader) must always be reference
+        /// counted so that they can be disposed deterministically.
+        /// </summary>
+        public required bool RefCounted
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => requiresDispose;
+            get => refCounted;
+            init => refCounted = value;
         }
+
+        public QueueTag Tag { get; set; }
 
         public int RefCount;
         public int Frequency;
 
         IMemoryOwner<byte>? buffer;
         readonly ReadOnlyMemory<byte> memory;
-        readonly bool requiresDispose;
+        readonly bool refCounted;
 
         public ReadOnlyMemory<byte> Memory
         {
@@ -63,14 +65,14 @@ public sealed class PageCache : IDisposable
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Retain()
         {
-            if (!requiresDispose) return;
+            if (!refCounted) return;
             Interlocked.Increment(ref RefCount);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool TryRetainIfAlive()
         {
-            if (!requiresDispose) return true;
+            if (!refCounted) return true;
             while (true)
             {
                 var current = Volatile.Read(ref RefCount);
@@ -88,7 +90,7 @@ public sealed class PageCache : IDisposable
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Release()
         {
-            if (!requiresDispose) return;
+            if (!refCounted) return;
             if (Interlocked.Decrement(ref RefCount) == 0)
             {
                 Buffer?.Dispose();
@@ -106,6 +108,7 @@ public sealed class PageCache : IDisposable
     readonly IPageLoader pageLoader;
     readonly int capacity;
     readonly IPageFilter[]? filters;
+    readonly bool gcReclamation;
     readonly int sTargetSize;
     readonly int mTargetSize;
 
@@ -119,11 +122,13 @@ public sealed class PageCache : IDisposable
         int capacity,
         IPageFilter[]? filters,
         double smallFraction = 0.2,
-        double ghostFraction = 1.0)
+        double ghostFraction = 1.0,
+        bool gcReclamation = true)
     {
         this.pageLoader = pageLoader;
         this.capacity = capacity;
         this.filters = filters;
+        this.gcReclamation = gcReclamation;
 
         sTargetSize = Math.Max(2, (int)(capacity * smallFraction));
         mTargetSize = capacity - sTargetSize;
@@ -248,10 +253,15 @@ public sealed class PageCache : IDisposable
 
     bool TryPublish(PageNumber pageNumber, IMemoryOwner<byte> buffer, out IPageEntry page)
     {
+        // Unmanaged buffers must always be reference counted; array-backed buffers only
+        // when deterministic pooling is requested (PageReclamation.ReferenceCounted).
+        var refCounted = !gcReclamation || !MemoryMarshal.TryGetArray(buffer.Memory, out ArraySegment<byte> _);
+
         var entry = new Entry
         {
             PageNumber = pageNumber,
             Buffer = buffer,
+            RefCounted = refCounted,
             Frequency = 1,
             Tag = QueueTag.None,
             // One reference for the map, one handed to the caller.
