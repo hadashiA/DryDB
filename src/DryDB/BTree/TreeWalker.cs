@@ -509,10 +509,7 @@ class TreeWalker
             {
                 if (!nextPageNumber.HasValue) return 0;
 
-                while (!PageCache.TryGet(nextPageNumber.Value, out page))
-                {
-                    PageCache.Load(nextPageNumber.Value);
-                }
+                PageCache.Load(nextPageNumber.Value);
             }
         }
 
@@ -520,9 +517,13 @@ class TreeWalker
 
         while (true)
         {
+            // `page` is reassigned to the right sibling inside the loop; keep the
+            // reference we own so that the finally releases the page we walked,
+            // not the newly acquired one.
+            var currentPage = page;
             try
             {
-                var pageSpan = page.Memory.Span;
+                var pageSpan = currentPage.Memory.Span;
                 var header = NodeHeader.Parse(pageSpan);
                 if (header.Kind != NodeKind.Leaf)
                 {
@@ -570,7 +571,7 @@ class TreeWalker
             }
             finally
             {
-                page.Release();
+                currentPage.Release();
             }
         }
     }
@@ -611,10 +612,7 @@ class TreeWalker
             {
                 if (!nextPageNumber.HasValue) return 0;
 
-                while (!PageCache.TryGet(nextPageNumber.Value, out page))
-                {
-                    await PageCache.LoadAsync(nextPageNumber.Value, cancellationToken).ConfigureAwait(false);
-                }
+                await PageCache.LoadAsync(nextPageNumber.Value, cancellationToken).ConfigureAwait(false);
             }
         }
 
@@ -622,9 +620,13 @@ class TreeWalker
 
         while (true)
         {
+            // `page` is reassigned to the right sibling inside the loop; keep the
+            // reference we own so that the finally releases the page we walked,
+            // not the newly acquired one.
+            var currentPage = page;
             try
             {
-                var pageSpan = page.Memory.Span;
+                var pageSpan = currentPage.Memory.Span;
                 var header = NodeHeader.Parse(pageSpan);
                 if (header.Kind != NodeKind.Leaf)
                 {
@@ -672,7 +674,7 @@ class TreeWalker
             }
             finally
             {
-                page.Release();
+                currentPage.Release();
             }
         }
     }
