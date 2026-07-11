@@ -5,17 +5,17 @@
     <text x="24" y="48" font-size="11.5" fill="#c3c2b7">Read 100 consecutive rows by key range — time per query (lower is better)</text>
     <line x1="262" y1="58" x2="262" y2="203" stroke="#3a3936" stroke-width="1"/>
   <text x="250" y="75" text-anchor="end" dominant-baseline="central" font-size="12" fill="#c3c2b7">DryDB</text>
-  <path d="M262 64 h29.79 a4 4 0 0 1 4 4 v14 a4 4 0 0 1 -4 4 h-29.79 Z" fill="#3987e5"/>
-  <text x="303.7931034482759" y="75" dominant-baseline="central" font-size="12" font-weight="600" fill="#ffffff">1.4 µs</text>
+  <path d="M262 64 h25.39 a4 4 0 0 1 4 4 v14 a4 4 0 0 1 -4 4 h-25.39 Z" fill="#3987e5"/>
+  <text x="299.38530734632684" y="75" dominant-baseline="central" font-size="12" font-weight="600" fill="#ffffff">1.4 µs</text>
   <text x="250" y="112" text-anchor="end" dominant-baseline="central" font-size="12" fill="#c3c2b7">SQLite (CsSqlite, prepared + immutable)</text>
-  <path d="M262 101 h227.72 a4 4 0 0 1 4 4 v14 a4 4 0 0 1 -4 4 h-227.72 Z" fill="#8d8c82"/>
-  <text x="501.7241379310345" y="112" dominant-baseline="central" font-size="12" font-weight="600" fill="#ffffff">9.6 µs</text>
+  <path d="M262 101 h197.50 a4 4 0 0 1 4 4 v14 a4 4 0 0 1 -4 4 h-197.5 Z" fill="#8d8c82"/>
+  <text x="471.4992503748126" y="112" dominant-baseline="central" font-size="12" font-weight="600" fill="#ffffff">9.6 µs</text>
   <text x="250" y="149" text-anchor="end" dominant-baseline="central" font-size="12" fill="#c3c2b7">RocksDB</text>
-  <path d="M262 138 h333.93 a4 4 0 0 1 4 4 v14 a4 4 0 0 1 -4 4 h-333.93 Z" fill="#8d8c82"/>
-  <text x="607.9310344827586" y="149" dominant-baseline="central" font-size="12" font-weight="600" fill="#ffffff">14 µs</text>
+  <path d="M262 138 h289.85 a4 4 0 0 1 4 4 v14 a4 4 0 0 1 -4 4 h-289.85 Z" fill="#8d8c82"/>
+  <text x="563.8530734632684" y="149" dominant-baseline="central" font-size="12" font-weight="600" fill="#ffffff">14 µs</text>
   <text x="250" y="186" text-anchor="end" dominant-baseline="central" font-size="12" fill="#c3c2b7">SQLite (CsSqlite, default)</text>
-  <path d="M262 175 h416.00 a4 4 0 0 1 4 4 v14 a4 4 0 0 1 -4 4 h-416 Z" fill="#8d8c82"/>
-  <text x="690" y="186" dominant-baseline="central" font-size="12" font-weight="600" fill="#ffffff">17.4 µs</text>
+  <path d="M262 175 h361.22 a4 4 0 0 1 4 4 v14 a4 4 0 0 1 -4 4 h-361.22 Z" fill="#8d8c82"/>
+  <text x="635.2173913043478" y="186" dominant-baseline="central" font-size="12" font-weight="600" fill="#ffffff">17.4 µs</text>
     <text x="24" y="230" font-size="10.5" fill="#8a897f">BenchmarkDotNet · .NET 10 · Apple M-series · 10,000 rows (int64 key, 13-byte value) · 4 KB pages</text>
   </g>
 </svg>
