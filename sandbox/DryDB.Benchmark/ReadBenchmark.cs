@@ -108,6 +108,26 @@ public class ReadBenchmark
         }
     }
 
+    const int ThreadCount = 8;
+
+    [Benchmark]
+    public void DryDB_FindByKey_Parallel()
+    {
+        var tasks = new Task[ThreadCount];
+        for (var t = 0; t < ThreadCount; t++)
+        {
+            tasks[t] = Task.Run(() =>
+            {
+                var table = database.GetTable("items");
+                for (var i = 0; i < 1000; i++)
+                {
+                    using var _ = table.Get(123);
+                }
+            });
+        }
+        Task.WaitAll(tasks);
+    }
+
     [Benchmark]
     public void CsSqlite_FindByKey()
     {
