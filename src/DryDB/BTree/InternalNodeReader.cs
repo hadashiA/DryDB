@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
+using DryDB.Internal;
 
 namespace DryDB.BTree;
 
@@ -61,7 +62,7 @@ readonly ref struct InternalNodeReader(ReadOnlySpan<byte> page, int entryCount)
             ref var ptr = ref Unsafe.Add(ref pageReference, meta.PageOffset);
 
             var midKey = MemoryMarshal.CreateReadOnlySpan(ref ptr, meta.KeyLength);
-            var cmp = keyEncoding.Compare(midKey, key);
+            var cmp = KeyCompare.Compare(keyEncoding, midKey, key);
             if (cmp <= 0) // upper bounds
             {
                 min = mid + 1;

@@ -19,7 +19,7 @@ class DuplicateKeyEncoding(IKeyEncoding sourceEncoding) : IKeyEncoding
     {
         var aOriginal = a[..^sizeof(int)];
         var bOriginal = b[..^sizeof(int)];
-        var sourceResult = sourceEncoding.Compare(aOriginal, bOriginal);
+        var sourceResult = KeyCompare.Compare(sourceEncoding, aOriginal, bOriginal);
         if (sourceResult == 0)
         {
             ref var aPtr = ref MemoryMarshal.GetReference(a);
