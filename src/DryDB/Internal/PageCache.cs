@@ -22,16 +22,28 @@ public sealed class PageCache : IDisposable
     class Entry : IPageEntry
     {
         public required PageNumber PageNumber { get; init; }
-        public required IMemoryOwner<byte>? Buffer { get; init; }
+        public required IMemoryOwner<byte>? Buffer
+        {
+            get => buffer;
+            init
+            {
+                buffer = value;
+                // cache the Memory to avoid the virtual IMemoryOwner<byte>.Memory call per access
+                memory = value?.Memory ?? default;
+            }
+        }
         public QueueTag Tag { get; set; }
 
         public int RefCount;
         public int Frequency;
 
+        IMemoryOwner<byte>? buffer;
+        readonly ReadOnlyMemory<byte> memory;
+
         public ReadOnlyMemory<byte> Memory
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => Buffer!.Memory;
+            get => memory;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -139,14 +151,12 @@ public sealed class PageCache : IDisposable
             }
 
             // freq++（max: 3）
-            while (true)
+            // Frequency is an approximate heuristic for S3-FIFO; a lost increment under
+            // contention is acceptable, so a single CAS attempt is enough (no retry loop).
+            var frequency = entry.Frequency;
+            if (frequency < 3)
             {
-                var frequency = entry.Frequency;
-                if (frequency >= 3) break;
-                if (Interlocked.CompareExchange(ref entry.Frequency, frequency + 1, frequency) == frequency)
-                {
-                    break;
-                }
+                Interlocked.CompareExchange(ref entry.Frequency, frequency + 1, frequency);
             }
             page = entry;
             return true;
