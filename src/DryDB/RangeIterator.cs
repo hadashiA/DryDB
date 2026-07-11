@@ -137,6 +137,11 @@ public class RangeIterator :
             currentPage?.Release();
             currentPage = page;
         }
+        else
+        {
+            // TrySearch acquired another reference to the page we already hold
+            page.Release();
+        }
         currentEntryIndex = entryIndex;
         return true;
     }
@@ -168,6 +173,11 @@ public class RangeIterator :
         {
             currentPage?.Release();
             currentPage = page;
+        }
+        else
+        {
+            // TrySearch acquired another reference to the page we already hold
+            page.Release();
         }
         currentEntryIndex = entryIndex;
         return true;
