@@ -53,33 +53,30 @@ public class ReadBenchmark : StoreBenchmarkBase
         Task.WaitAll(tasks);
     }
 
-    [Benchmark]
-    public void DryDB_FindByKey_RefCounted()
-    {
-        for (var i = 0; i < Iterations; i++)
-        {
-            var table = databaseRefCounted.GetTable("items");
-            using var _ = table.Get(FindKey);
-        }
-    }
 
+
+    // Parallel reads over spread-out keys: no single hot cache line, which is the
+    // realistic shape of concurrent workloads (the same-key variants above are the
+    // worst case for refcount line contention).
     [Benchmark]
-    public void DryDB_FindByKey_Parallel_RefCounted()
+    public void DryDB_FindByKey_ParallelSpread()
     {
         var tasks = new Task[ThreadCount];
         for (var t = 0; t < ThreadCount; t++)
         {
+            var offset = t * 1000;
             tasks[t] = Task.Run(() =>
             {
-                var table = databaseRefCounted.GetTable("items");
+                var table = database.GetTable("items");
                 for (var i = 0; i < Iterations; i++)
                 {
-                    using var _ = table.Get(FindKey);
+                    using var _ = table.Get((offset + i * 7) % N);
                 }
             });
         }
         Task.WaitAll(tasks);
     }
+
 
     [Benchmark]
     public void CsSqlite_FindByKey()

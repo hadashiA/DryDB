@@ -2,7 +2,6 @@ using System;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -34,19 +33,6 @@ public sealed class PageCache : IDisposable
             }
         }
 
-        /// <summary>
-        /// When false, the buffer is left to the GC once nothing references the entry, and
-        /// all reference counting is a no-op — reads become interlocked-free. Buffers over
-        /// unmanaged memory (e.g. Unity's NativeArray loader) must always be reference
-        /// counted so that they can be disposed deterministically.
-        /// </summary>
-        public required bool RefCounted
-        {
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => refCounted;
-            init => refCounted = value;
-        }
-
         public QueueTag Tag { get; set; }
 
         public int RefCount;
@@ -54,7 +40,6 @@ public sealed class PageCache : IDisposable
 
         IMemoryOwner<byte>? buffer;
         readonly ReadOnlyMemory<byte> memory;
-        readonly bool refCounted;
 
         public ReadOnlyMemory<byte> Memory
         {
@@ -70,15 +55,12 @@ public sealed class PageCache : IDisposable
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Retain()
         {
-            if (!refCounted) return;
             Interlocked.Increment(ref RefCount);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool TryRetainIfAlive()
         {
-            if (!refCounted) return true;
-
             // Optimistic fetch-add instead of a CAS loop: one atomic op that always
             // succeeds, which scales far better under contention (no retry storms).
             // The entry object itself is GC-managed, so touching the counter of a dead
@@ -100,7 +82,6 @@ public sealed class PageCache : IDisposable
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Release()
         {
-            if (!refCounted) return;
             if (Interlocked.Decrement(ref RefCount) == 0)
             {
                 // Stamp the entry dead before disposing. If a concurrent optimistic
@@ -124,7 +105,6 @@ public sealed class PageCache : IDisposable
     readonly IPageLoader pageLoader;
     readonly int capacity;
     readonly IPageFilter[]? filters;
-    readonly bool gcReclamation;
     readonly int sTargetSize;
     readonly int mTargetSize;
 
@@ -138,13 +118,11 @@ public sealed class PageCache : IDisposable
         int capacity,
         IPageFilter[]? filters,
         double smallFraction = 0.2,
-        double ghostFraction = 1.0,
-        bool gcReclamation = true)
+        double ghostFraction = 1.0)
     {
         this.pageLoader = pageLoader;
         this.capacity = capacity;
         this.filters = filters;
-        this.gcReclamation = gcReclamation;
 
         sTargetSize = Math.Max(2, (int)(capacity * smallFraction));
         mTargetSize = capacity - sTargetSize;
@@ -269,15 +247,10 @@ public sealed class PageCache : IDisposable
 
     bool TryPublish(PageNumber pageNumber, IMemoryOwner<byte> buffer, out IPageEntry page)
     {
-        // Unmanaged buffers must always be reference counted; array-backed buffers only
-        // when deterministic pooling is requested (PageReclamation.ReferenceCounted).
-        var refCounted = !gcReclamation || !MemoryMarshal.TryGetArray(buffer.Memory, out ArraySegment<byte> _);
-
         var entry = new Entry
         {
             PageNumber = pageNumber,
             Buffer = buffer,
-            RefCounted = refCounted,
             Frequency = 1,
             Tag = QueueTag.None,
             // One reference for the map, one handed to the caller.

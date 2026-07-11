@@ -29,7 +29,6 @@ public abstract class StoreBenchmarkBase
     protected const int N = 10000;
 
     protected ReadOnlyDatabase database = default!;
-    protected ReadOnlyDatabase databaseRefCounted = default!;
 
     // sqlite: as-is defaults (command prepared per query)
     protected SqliteConnection cssqliteConnection = default!;
@@ -108,11 +107,6 @@ public abstract class StoreBenchmarkBase
         {
         });
 
-        databaseRefCounted = await ReadOnlyDatabase.OpenFileAsync(drydbPath, new DatabaseLoadOptions
-        {
-            PageReclamation = PageReclamation.ReferenceCounted,
-        });
-
         cssqliteConnection = new SqliteConnection(sqlitePath);
         cssqliteImmutableConnection = new SqliteConnection($"file:{sqlitePath}?immutable=1");
         rocksDb = RocksDb.OpenReadOnly(rocksDbOptions, rocksdbPath, false);
@@ -129,7 +123,6 @@ public abstract class StoreBenchmarkBase
         cssqliteImmutableConnection.Dispose();
         rocksDb.Dispose();
         database.Dispose();
-        databaseRefCounted.Dispose();
 
         try
         {
