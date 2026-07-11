@@ -62,6 +62,11 @@ public sealed class PageCache : IDisposable
             get => memory;
         }
 
+        // Once the refcount reaches zero the entry is stamped with this bias so that
+        // late optimistic increments (see TryRetainIfAlive) can never make a dead entry
+        // look alive again. Far larger in magnitude than any possible reader count.
+        const int DeadBias = int.MinValue / 2;
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Retain()
         {
@@ -73,18 +78,23 @@ public sealed class PageCache : IDisposable
         public bool TryRetainIfAlive()
         {
             if (!refCounted) return true;
-            while (true)
+
+            // Optimistic fetch-add instead of a CAS loop: one atomic op that always
+            // succeeds, which scales far better under contention (no retry storms).
+            // The entry object itself is GC-managed, so touching the counter of a dead
+            // entry is safe — only the buffer must not be used.
+            //
+            //   result >= 1 : the entry was alive (or a racing releaser is about to
+            //                 attempt the dead-stamp CAS, which our increment defeats).
+            //   result <= 0 : the entry was already stamped dead; undo and fail.
+            var result = Interlocked.Increment(ref RefCount);
+            if (result >= 1)
             {
-                var current = Volatile.Read(ref RefCount);
-                if (current <= 0)
-                    return false;
-
-                var next = current + 1;
-
-                int original = Interlocked.CompareExchange(ref RefCount, next, current);
-                if (original == current)
-                    return true;
+                return true;
             }
+
+            Interlocked.Decrement(ref RefCount);
+            return false;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -93,7 +103,13 @@ public sealed class PageCache : IDisposable
             if (!refCounted) return;
             if (Interlocked.Decrement(ref RefCount) == 0)
             {
-                Buffer?.Dispose();
+                // Stamp the entry dead before disposing. If a concurrent optimistic
+                // retain slipped in after our decrement, the CAS fails and the entry
+                // stays alive — that reader now owns it and will release it later.
+                if (Interlocked.CompareExchange(ref RefCount, DeadBias, 0) == 0)
+                {
+                    Buffer?.Dispose();
+                }
             }
         }
     }

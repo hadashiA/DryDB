@@ -54,6 +54,34 @@ public class ReadBenchmark : StoreBenchmarkBase
     }
 
     [Benchmark]
+    public void DryDB_FindByKey_RefCounted()
+    {
+        for (var i = 0; i < Iterations; i++)
+        {
+            var table = databaseRefCounted.GetTable("items");
+            using var _ = table.Get(FindKey);
+        }
+    }
+
+    [Benchmark]
+    public void DryDB_FindByKey_Parallel_RefCounted()
+    {
+        var tasks = new Task[ThreadCount];
+        for (var t = 0; t < ThreadCount; t++)
+        {
+            tasks[t] = Task.Run(() =>
+            {
+                var table = databaseRefCounted.GetTable("items");
+                for (var i = 0; i < Iterations; i++)
+                {
+                    using var _ = table.Get(FindKey);
+                }
+            });
+        }
+        Task.WaitAll(tasks);
+    }
+
+    [Benchmark]
     public void CsSqlite_FindByKey()
     {
         for (var i = 0; i < Iterations; i++)
