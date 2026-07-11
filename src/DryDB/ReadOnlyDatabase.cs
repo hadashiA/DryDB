@@ -48,7 +48,7 @@ public sealed class ReadOnlyDatabase : IDisposable
         options ??= DatabaseLoadOptions.Default;
         var catalog = await DryDBCodec.ParseCatalogAsync(stream, cancellationToken);
         var storage = options.StorageFactory.Invoke(stream, catalog.PageSize);
-        return new ReadOnlyDatabase(catalog, storage, options.CacheSize);
+        return new ReadOnlyDatabase(catalog, storage, options);
     }
 
     public Catalog Catalog { get; }
@@ -56,11 +56,11 @@ public sealed class ReadOnlyDatabase : IDisposable
     readonly PageCache pageCache;
     readonly Dictionary<string, ReadOnlyTable> tables;
 
-    ReadOnlyDatabase(Catalog catalog, IPageLoader pageLoader, int cacheSize)
+    ReadOnlyDatabase(Catalog catalog, IPageLoader pageLoader, DatabaseLoadOptions options)
     {
         Catalog = catalog;
         this.pageLoader = pageLoader;
-        var pageCacheCapacity = Math.Max(cacheSize / catalog.PageSize, 8);
+        var pageCacheCapacity = Math.Max(options.CacheSize / catalog.PageSize, 8);
         pageCache = new PageCache(pageLoader, pageCacheCapacity, catalog.Filters?.ToArray() ?? []);
 
         tables = new Dictionary<string, ReadOnlyTable>(catalog.TableDescriptors.Count);
@@ -72,6 +72,10 @@ public sealed class ReadOnlyDatabase : IDisposable
 
     public void Dispose()
     {
+        foreach (var table in tables.Values)
+        {
+            table.ReleasePinnedPages();
+        }
         pageCache.Dispose();
         pageLoader.Dispose();
     }

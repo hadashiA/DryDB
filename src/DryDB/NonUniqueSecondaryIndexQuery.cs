@@ -23,6 +23,8 @@ public class NonUniqueSecondaryIndexQuery : IKeyValueStore
             new DuplicateKeyEncoding(descriptor.KeyEncoding));
     }
 
+    internal void ReleasePinnedPages() => duplicateKeyTree.ReleasePinnedRoot();
+
     public SingleValueResult Get(ReadOnlySpan<byte> key)
     {
         Span<byte> minKeyBuffer = stackalloc byte[DuplicateKey.SizeOf(key.Length)];
@@ -78,11 +80,7 @@ public class NonUniqueSecondaryIndexQuery : IKeyValueStore
         foreach (var x in valueRefs)
         {
             var pageRef = PageRef.Parse(x.Span);
-            IPageEntry page;
-            while (!duplicateKeyTree.PageCache.TryGet(pageRef.PageNumber, out page))
-            {
-                duplicateKeyTree.PageCache.Load(pageRef.PageNumber);
-            }
+            var page = duplicateKeyTree.PageCache.GetOrLoad(pageRef.PageNumber);
             result.Add(page, pageRef.Start, pageRef.Length);
             page.Release();
         }
@@ -136,11 +134,7 @@ public class NonUniqueSecondaryIndexQuery : IKeyValueStore
         foreach (var x in valueRefs)
         {
             var pageRef = PageRef.Parse(x.Span);
-            IPageEntry page;
-            while (!duplicateKeyTree.PageCache.TryGet(pageRef.PageNumber, out page))
-            {
-                await duplicateKeyTree.PageCache.LoadAsync(pageRef.PageNumber, cancellationToken);
-            }
+            var page = await duplicateKeyTree.PageCache.GetOrLoadAsync(pageRef.PageNumber, cancellationToken);
             result.Add(page, pageRef.Start, pageRef.Length);
             page.Release();
         }

@@ -23,11 +23,38 @@ class TreeWalker
     readonly IKeyEncoding comparer;
 
     // The root page is touched by every lookup. Keep one retained reference here so the
-    // hot path can skip the cache lookup + refcount traffic for it. The pin lives for the
-    // lifetime of the TreeWalker; the underlying buffer is reclaimed by the GC afterwards.
+    // hot path can skip the cache lookup + refcount traffic for it. The pin lives until
+    // the owning database is disposed (see ReleasePinnedRoot).
     IPageEntry? pinnedRoot;
 
     static readonly int BlobDataOffset = Unsafe.SizeOf<PageHeader>() + Unsafe.SizeOf<NodeHeader>();
+
+    /// <summary>
+    /// A page acquired for a tree walk. <see cref="Owned"/> is false when the page is
+    /// served from the pinned root, in which case the walk holds no reference of its
+    /// own and must not release it (use <see cref="Take"/> to hand the page out).
+    /// </summary>
+    readonly struct PageLease(IPageEntry page, bool owned)
+    {
+        public IPageEntry Page => page;
+        public bool Owned => owned;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void Release()
+        {
+            if (owned) page.Release();
+        }
+
+        /// <summary>
+        /// Take a caller-owned reference to the page (for handing it out beyond the walk).
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public IPageEntry Take()
+        {
+            if (!owned) page.Retain();
+            return page;
+        }
+    }
 
     internal TreeWalker(
         PageNumber rootPageNumber,
@@ -47,43 +74,227 @@ class TreeWalker
         };
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public SingleValueResult Get(ReadOnlySpan<byte> key)
+    /// <summary>
+    /// Drop the pinned root reference. Required for page buffers over unmanaged memory
+    /// (e.g. the Unity NativeArray loader), which are only freed when their refcount
+    /// reaches zero.
+    /// </summary>
+    internal void ReleasePinnedRoot()
     {
-        PageNumber? next = RootPageNumber;
-        PageSlice pageSlice;
+        var root = Interlocked.Exchange(ref pinnedRoot, null);
+        root?.Release();
+    }
 
-        while (!TryFindFrom(next.Value, key, out _, out pageSlice, out next))
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    PageLease GetPage(PageNumber pageNumber)
+    {
+        if (pageNumber == RootPageNumber)
         {
-            if (!next.HasValue) return SingleValueResult.Empty;
-            PageCache.Load(next.Value);
+            var root = pinnedRoot;
+            if (root != null)
+            {
+                return new PageLease(root, false);
+            }
+            return PinRoot(PageCache.GetOrLoad(pageNumber));
+        }
+        return new PageLease(PageCache.GetOrLoad(pageNumber), true);
+    }
+
+    ValueTask<PageLease> GetPageAsync(PageNumber pageNumber, CancellationToken cancellationToken)
+    {
+        if (pageNumber == RootPageNumber)
+        {
+            var root = pinnedRoot;
+            if (root != null)
+            {
+                return new ValueTask<PageLease>(new PageLease(root, false));
+            }
+            return PinRootAsync(pageNumber, cancellationToken);
+        }
+        return GetOwnedAsync(pageNumber, cancellationToken);
+
+        async ValueTask<PageLease> PinRootAsync(PageNumber rootPageNumber, CancellationToken ct)
+        {
+            var page = await PageCache.GetOrLoadAsync(rootPageNumber, ct).ConfigureAwait(false);
+            return PinRoot(page);
         }
 
-        return new SingleValueResult(pageSlice, true);
+        async ValueTask<PageLease> GetOwnedAsync(PageNumber pn, CancellationToken ct)
+        {
+            return new PageLease(await PageCache.GetOrLoadAsync(pn, ct).ConfigureAwait(false), true);
+        }
+    }
+
+    PageLease PinRoot(IPageEntry page)
+    {
+        // Transfer the freshly acquired reference to the pin. If another thread won the
+        // race, keep using our own reference as a normal owned lease.
+        if (Interlocked.CompareExchange(ref pinnedRoot, page, null) == null)
+        {
+            return new PageLease(page, false);
+        }
+        return new PageLease(page, true);
+    }
+
+    public SingleValueResult Get(ReadOnlySpan<byte> key)
+    {
+        var pageNumber = RootPageNumber;
+        while (true)
+        {
+            var lease = GetPage(pageNumber);
+            var pageSpan = lease.Page.Memory.Span;
+            var header = NodeHeader.Parse(pageSpan);
+            if (header.Kind == NodeKind.Internal)
+            {
+                var internalNode = new InternalNodeReader(pageSpan, header.EntryCount);
+                var descended = internalNode.TrySearch(key, comparer, out pageNumber);
+                lease.Release();
+                if (!descended)
+                {
+                    return SingleValueResult.Empty;
+                }
+            }
+            else // Leaf
+            {
+                var leafNode = new LeafNodeReader(pageSpan, header.EntryCount);
+                if (leafNode.TryFindValue(key, comparer, out _, out var valueOffset, out var valueLength))
+                {
+                    if (LeafNodeReader.IsOverflow(valueLength))
+                    {
+                        var resolved = ResolveValue(lease.Page, valueOffset, valueLength);
+                        lease.Release();
+                        return new SingleValueResult(resolved, true);
+                    }
+                    return new SingleValueResult(new PageSlice(lease.Take(), valueOffset, valueLength), true);
+                }
+
+                lease.Release();
+                return SingleValueResult.Empty;
+            }
+        }
     }
 
     public async ValueTask<SingleValueResult> GetAsync(
         ReadOnlyMemory<byte> key,
         CancellationToken cancellationToken = default)
     {
-        PageSlice resultValue;
-        PageNumber? next = RootPageNumber;
-
-        while (!TryFindFrom(next.Value, key.Span, out _, out resultValue, out next))
+        var pageNumber = RootPageNumber;
+        while (true)
         {
-            if (!next.HasValue)
+            var lease = await GetPageAsync(pageNumber, cancellationToken).ConfigureAwait(false);
+            var header = NodeHeader.Parse(lease.Page.Memory.Span);
+            if (header.Kind == NodeKind.Internal)
             {
+                var descended = new InternalNodeReader(lease.Page.Memory.Span, header.EntryCount)
+                    .TrySearch(key.Span, comparer, out pageNumber);
+                lease.Release();
+                if (!descended)
+                {
+                    return SingleValueResult.Empty;
+                }
+            }
+            else // Leaf
+            {
+                if (new LeafNodeReader(lease.Page.Memory.Span, header.EntryCount)
+                    .TryFindValue(key.Span, comparer, out _, out var valueOffset, out var valueLength))
+                {
+                    if (LeafNodeReader.IsOverflow(valueLength))
+                    {
+                        var resolved = await ResolveValueAsync(lease.Page, valueOffset, valueLength, cancellationToken)
+                            .ConfigureAwait(false);
+                        lease.Release();
+                        return new SingleValueResult(resolved, true);
+                    }
+                    return new SingleValueResult(new PageSlice(lease.Take(), valueOffset, valueLength), true);
+                }
+
+                lease.Release();
                 return SingleValueResult.Empty;
             }
-
-            await PageCache.LoadAsync(next.Value, cancellationToken).ConfigureAwait(false);
         }
-
-        return new SingleValueResult(resultValue, true);
     }
 
     public RangeIterator CreateIterator(IteratorDirection iteratorDirection = IteratorDirection.Forward) =>
         new(this, iteratorDirection);
+
+    /// <summary>
+    /// Descend to the leaf that satisfies <paramref name="op"/> for the key. On success
+    /// the returned page carries a caller-owned reference.
+    /// </summary>
+    internal bool Search(
+        scoped ReadOnlySpan<byte> key,
+        SearchOperator op,
+        out IPageEntry page,
+        out int index)
+    {
+        var pageNumber = RootPageNumber;
+        while (true)
+        {
+            var lease = GetPage(pageNumber);
+            var pageSpan = lease.Page.Memory.Span;
+            var header = NodeHeader.Parse(pageSpan);
+            if (header.Kind == NodeKind.Internal)
+            {
+                var internalNode = new InternalNodeReader(pageSpan, header.EntryCount);
+                var descended = internalNode.TrySearch(key, comparer, out pageNumber);
+                lease.Release();
+                if (!descended)
+                {
+                    page = null!;
+                    index = default;
+                    return false;
+                }
+            }
+            else // Leaf
+            {
+                var leafNode = new LeafNodeReader(pageSpan, header.EntryCount);
+                if (leafNode.TrySearch(key, op, comparer, out index))
+                {
+                    page = lease.Take();
+                    return true;
+                }
+
+                lease.Release();
+                page = null!;
+                index = default;
+                return false;
+            }
+        }
+    }
+
+    internal async ValueTask<(IPageEntry? Page, int Index)> SearchAsync(
+        ReadOnlyMemory<byte> key,
+        SearchOperator op,
+        CancellationToken cancellationToken)
+    {
+        var pageNumber = RootPageNumber;
+        while (true)
+        {
+            var lease = await GetPageAsync(pageNumber, cancellationToken).ConfigureAwait(false);
+            var header = NodeHeader.Parse(lease.Page.Memory.Span);
+            if (header.Kind == NodeKind.Internal)
+            {
+                var descended = new InternalNodeReader(lease.Page.Memory.Span, header.EntryCount)
+                    .TrySearch(key.Span, comparer, out pageNumber);
+                lease.Release();
+                if (!descended)
+                {
+                    return (null, default);
+                }
+            }
+            else // Leaf
+            {
+                if (new LeafNodeReader(lease.Page.Memory.Span, header.EntryCount)
+                    .TrySearch(key.Span, op, comparer, out var index))
+                {
+                    return (lease.Take(), index);
+                }
+
+                lease.Release();
+                return (null, default);
+            }
+        }
+    }
 
     public RangeResult GetRange(
         ReadOnlySpan<byte> startKey,
@@ -111,29 +322,21 @@ class TreeWalker
         // find start position
         if (startKey.IsEmpty)
         {
-            var minValue = GetMinValue();
-            if (!minValue.HasValue)
+            var minLeaf = GetMinLeaf();
+            if (!minLeaf.HasValue)
             {
                 return RangeResult.Empty;
             }
-            page = minValue.Value.Page;
+            page = minLeaf.Value.Page;
             entryIndex = 0;
         }
-        else
+        else if (!Search(
+                     startKey,
+                     startKeyExclusive ? SearchOperator.UpperBound : SearchOperator.LowerBound,
+                     out page,
+                     out entryIndex))
         {
-            PageNumber? nextPageNumber = RootPageNumber;
-            while (!TrySearch(
-                       nextPageNumber.Value,
-                       startKey,
-                       startKeyExclusive ? SearchOperator.UpperBound : SearchOperator.LowerBound,
-                       out page,
-                       out entryIndex,
-                       out nextPageNumber))
-            {
-                if (!nextPageNumber.HasValue) return RangeResult.Empty;
-
-                PageCache.Load(nextPageNumber.Value);
-            }
+            return RangeResult.Empty;
         }
 
         var result = RangeResult.Rent();
@@ -151,22 +354,25 @@ class TreeWalker
                 }
 
                 var leafNode = new LeafNodeReader(pageSpan, header.EntryCount);
-                while (entryIndex < header.EntryCount)
+
+                // Entries within a leaf are sorted: locate the end bound with one binary
+                // search instead of comparing every entry.
+                var stopIndex = header.EntryCount;
+                var endsInThisLeaf = false;
+                if (!endKey.IsEmpty)
+                {
+                    var op = endKeyExclusive ? SearchOperator.LowerBound : SearchOperator.UpperBound;
+                    if (leafNode.TrySearch(endKey, op, comparer, out var boundIndex))
+                    {
+                        stopIndex = boundIndex;
+                        endsInThisLeaf = true;
+                    }
+                }
+
+                while (entryIndex < stopIndex)
                 {
                     leafNode.GetAt(entryIndex, out var pageOffset, out var keyLength, out var valueLength);
 
-                    // check end key
-                    if (!endKey.IsEmpty)
-                    {
-                        var key = MemoryMarshal.CreateReadOnlySpan(
-                            ref Unsafe.Add(ref MemoryMarshal.GetReference(pageSpan), pageOffset),
-                            keyLength);
-                        var compared = KeyCompare.Compare(comparer, key, endKey);
-                        if (compared > 0 || (endKeyExclusive && compared == 0))
-                        {
-                            return result;
-                        }
-                    }
                     if (LeafNodeReader.IsOverflow(valueLength))
                     {
                         var resolved = ResolveValue(currentPage, pageOffset + keyLength, valueLength);
@@ -181,16 +387,12 @@ class TreeWalker
                 }
 
                 // next node
-                if (header.RightSiblingPageNumber.IsEmpty)
+                if (endsInThisLeaf || header.RightSiblingPageNumber.IsEmpty)
                 {
                     return result;
                 }
 
-                var pageNumber = header.RightSiblingPageNumber;
-                while (!PageCache.TryGet(pageNumber, out page))
-                {
-                    PageCache.Load(pageNumber);
-                }
+                page = PageCache.GetOrLoad(header.RightSiblingPageNumber);
                 entryIndex = 0;
             }
             finally
@@ -229,22 +431,24 @@ class TreeWalker
                 }
 
                 var leafNode = new LeafNodeReader(pageSpan, header.EntryCount);
-                while (entryIndex >= 0)
+
+                // Entries within a leaf are sorted: locate the start bound with one
+                // binary search instead of comparing every entry.
+                var boundIndex = 0;
+                if (!startKey.IsEmpty)
+                {
+                    var op = startKeyExclusive ? SearchOperator.UpperBound : SearchOperator.LowerBound;
+                    if (!leafNode.TrySearch(startKey, op, comparer, out boundIndex))
+                    {
+                        // Everything in (and left of) this leaf is below the start bound.
+                        return result;
+                    }
+                }
+
+                while (entryIndex >= boundIndex)
                 {
                     leafNode.GetAt(entryIndex, out var pageOffset, out var keyLength, out var valueLength);
 
-                    // check start key (lower bound for descending)
-                    if (!startKey.IsEmpty)
-                    {
-                        var key = MemoryMarshal.CreateReadOnlySpan(
-                            ref Unsafe.Add(ref MemoryMarshal.GetReference(pageSpan), pageOffset),
-                            keyLength);
-                        var compared = KeyCompare.Compare(comparer, key, startKey);
-                        if (compared < 0 || (startKeyExclusive && compared == 0))
-                        {
-                            return result;
-                        }
-                    }
                     if (LeafNodeReader.IsOverflow(valueLength))
                     {
                         var resolved = ResolveValue(currentPage, pageOffset + keyLength, valueLength);
@@ -259,18 +463,13 @@ class TreeWalker
                 }
 
                 // previous node (left sibling)
-                if (header.LeftSiblingPageNumber.IsEmpty)
+                if (boundIndex > 0 || header.LeftSiblingPageNumber.IsEmpty)
                 {
                     return result;
                 }
 
-                var pageNumber = header.LeftSiblingPageNumber;
-                while (!PageCache.TryGet(pageNumber, out page))
-                {
-                    PageCache.Load(pageNumber);
-                }
-                var nextHeader = NodeHeader.Parse(page.Memory.Span);
-                entryIndex = nextHeader.EntryCount - 1;
+                page = PageCache.GetOrLoad(header.LeftSiblingPageNumber);
+                entryIndex = NodeHeader.Parse(page.Memory.Span).EntryCount - 1;
             }
             finally
             {
@@ -307,28 +506,25 @@ class TreeWalker
         // find start position
         if (startKey.IsEmpty)
         {
-            var minValue = GetMinValue();
-            if (!minValue.HasValue)
+            var minLeaf = GetMinLeaf();
+            if (!minLeaf.HasValue)
             {
                 return RangeResult.Empty;
             }
-            page = minValue.Value.Page;
+            page = minLeaf.Value.Page;
             entryIndex = 0;
         }
         else
         {
-            PageNumber? nextPageNumber = RootPageNumber;
-            while (!TrySearch(
-                       nextPageNumber.Value,
-                       startKey.Span,
-                       startKeyExclusive ? SearchOperator.UpperBound : SearchOperator.LowerBound,
-                       out page,
-                       out entryIndex,
-                       out nextPageNumber))
+            (var startPage, entryIndex) = await SearchAsync(
+                startKey,
+                startKeyExclusive ? SearchOperator.UpperBound : SearchOperator.LowerBound,
+                cancellationToken).ConfigureAwait(false);
+            if (startPage == null)
             {
-                if (!nextPageNumber.HasValue) return RangeResult.Empty;
-                await PageCache.LoadAsync(nextPageNumber.Value, cancellationToken).ConfigureAwait(false);
+                return RangeResult.Empty;
             }
+            page = startPage;
         }
 
         var result = RangeResult.Rent();
@@ -344,25 +540,28 @@ class TreeWalker
                     throw new InvalidOperationException("Invalid node kind");
                 }
 
-                while (entryIndex < header.EntryCount)
+                // Entries within a leaf are sorted: locate the end bound with one binary
+                // search instead of comparing every entry.
+                var stopIndex = header.EntryCount;
+                var endsInThisLeaf = false;
+                if (!endKey.IsEmpty)
+                {
+                    var op = endKeyExclusive ? SearchOperator.LowerBound : SearchOperator.UpperBound;
+                    if (new LeafNodeReader(currentPage.Memory.Span, header.EntryCount)
+                        .TrySearch(endKey.Span, op, comparer, out var boundIndex))
+                    {
+                        stopIndex = boundIndex;
+                        endsInThisLeaf = true;
+                    }
+                }
+
+                while (entryIndex < stopIndex)
                 {
                     int pageOffset;
                     ushort keyLength, valueLength;
                     new LeafNodeReader(currentPage.Memory.Span, header.EntryCount)
                         .GetAt(entryIndex, out pageOffset, out keyLength, out valueLength);
 
-                    // check end key
-                    if (!endKey.IsEmpty)
-                    {
-                        var compared = KeyCompare.Compare(
-                            comparer,
-                            currentPage.Memory.Span.Slice(pageOffset, keyLength),
-                            endKey.Span);
-                        if (compared > 0 || (endKeyExclusive && compared == 0))
-                        {
-                            return result;
-                        }
-                    }
                     if (LeafNodeReader.IsOverflow(valueLength))
                     {
                         var resolved = await ResolveValueAsync(currentPage, pageOffset + keyLength, valueLength, cancellationToken)
@@ -379,16 +578,13 @@ class TreeWalker
                 }
 
                 // next node
-                if (header.RightSiblingPageNumber.IsEmpty)
+                if (endsInThisLeaf || header.RightSiblingPageNumber.IsEmpty)
                 {
                     return result;
                 }
 
-                var pageNumber = header.RightSiblingPageNumber;
-                while (!PageCache.TryGet(pageNumber, out page))
-                {
-                    await PageCache.LoadAsync(pageNumber, cancellationToken).ConfigureAwait(false);
-                }
+                page = await PageCache.GetOrLoadAsync(header.RightSiblingPageNumber, cancellationToken)
+                    .ConfigureAwait(false);
                 entryIndex = 0;
             }
             finally
@@ -426,25 +622,27 @@ class TreeWalker
                     throw new InvalidOperationException("Invalid node kind");
                 }
 
-                while (entryIndex >= 0)
+                // Entries within a leaf are sorted: locate the start bound with one
+                // binary search instead of comparing every entry.
+                var boundIndex = 0;
+                if (!startKey.IsEmpty)
+                {
+                    var op = startKeyExclusive ? SearchOperator.UpperBound : SearchOperator.LowerBound;
+                    if (!new LeafNodeReader(currentPage.Memory.Span, header.EntryCount)
+                        .TrySearch(startKey.Span, op, comparer, out boundIndex))
+                    {
+                        // Everything in (and left of) this leaf is below the start bound.
+                        return result;
+                    }
+                }
+
+                while (entryIndex >= boundIndex)
                 {
                     int pageOffset;
                     ushort keyLength, valueLength;
                     new LeafNodeReader(currentPage.Memory.Span, header.EntryCount)
                         .GetAt(entryIndex, out pageOffset, out keyLength, out valueLength);
 
-                    // check start key (lower bound for descending)
-                    if (!startKey.IsEmpty)
-                    {
-                        var compared = KeyCompare.Compare(
-                            comparer,
-                            currentPage.Memory.Span.Slice(pageOffset, keyLength),
-                            startKey.Span);
-                        if (compared < 0 || (startKeyExclusive && compared == 0))
-                        {
-                            return result;
-                        }
-                    }
                     if (LeafNodeReader.IsOverflow(valueLength))
                     {
                         var resolved = await ResolveValueAsync(currentPage, pageOffset + keyLength, valueLength, cancellationToken)
@@ -461,18 +659,14 @@ class TreeWalker
                 }
 
                 // previous node (left sibling)
-                if (header.LeftSiblingPageNumber.IsEmpty)
+                if (boundIndex > 0 || header.LeftSiblingPageNumber.IsEmpty)
                 {
                     return result;
                 }
 
-                var pageNumber = header.LeftSiblingPageNumber;
-                while (!PageCache.TryGet(pageNumber, out page))
-                {
-                    await PageCache.LoadAsync(pageNumber, cancellationToken).ConfigureAwait(false);
-                }
-                var nextHeader = NodeHeader.Parse(page.Memory.Span);
-                entryIndex = nextHeader.EntryCount - 1;
+                page = await PageCache.GetOrLoadAsync(header.LeftSiblingPageNumber, cancellationToken)
+                    .ConfigureAwait(false);
+                entryIndex = NodeHeader.Parse(page.Memory.Span).EntryCount - 1;
             }
             finally
             {
@@ -489,35 +683,27 @@ class TreeWalker
     {
         ValidateRange(startKey, endKey);
 
+        int entryIndex;
         IPageEntry page;
 
-        int entryIndex;
         // find start position
         if (startKey.IsEmpty)
         {
-            var minValue = GetMinValue();
-            if (!minValue.HasValue)
+            var minLeaf = GetMinLeaf();
+            if (!minLeaf.HasValue)
             {
                 return 0;
             }
-            page = minValue.Value.Page;
+            page = minLeaf.Value.Page;
             entryIndex = 0;
         }
-        else
+        else if (!Search(
+                     startKey,
+                     startKeyExclusive ? SearchOperator.UpperBound : SearchOperator.LowerBound,
+                     out page,
+                     out entryIndex))
         {
-            PageNumber? nextPageNumber = RootPageNumber;
-            while (!TrySearch(
-                       nextPageNumber.Value,
-                       startKey,
-                       startKeyExclusive ? SearchOperator.UpperBound : SearchOperator.LowerBound,
-                       out page,
-                       out entryIndex,
-                       out nextPageNumber))
-            {
-                if (!nextPageNumber.HasValue) return 0;
-
-                PageCache.Load(nextPageNumber.Value);
-            }
+            return 0;
         }
 
         var count = 0;
@@ -537,31 +723,19 @@ class TreeWalker
                     throw new InvalidOperationException("Invalid node kind");
                 }
 
-                var leafNode = new LeafNodeReader(pageSpan, header.EntryCount);
-                while (entryIndex < header.EntryCount)
+                // Entries within a leaf are sorted: locate the end bound with one binary
+                // search instead of comparing every entry.
+                if (!endKey.IsEmpty)
                 {
-                    leafNode.GetAt(
-                        entryIndex,
-                        out var pageOffset,
-                        out var keyLength,
-                        out var valueLength);
-
-                    // check end key
-                    if (!endKey.IsEmpty)
+                    var leafNode = new LeafNodeReader(pageSpan, header.EntryCount);
+                    var op = endKeyExclusive ? SearchOperator.LowerBound : SearchOperator.UpperBound;
+                    if (leafNode.TrySearch(endKey, op, comparer, out var boundIndex))
                     {
-                        var key = MemoryMarshal.CreateReadOnlySpan(
-                            ref Unsafe.Add(ref MemoryMarshal.GetReference(pageSpan), pageOffset),
-                            keyLength);
-                        var compared = KeyCompare.Compare(comparer, key, endKey);
-                        if (compared > 0 || (endKeyExclusive && compared == 0))
-                        {
-                            return count;
-                        }
+                        // The range ends inside this leaf.
+                        return count + Math.Max(0, boundIndex - entryIndex);
                     }
-
-                    count++;
-                    entryIndex++;
                 }
+                count += header.EntryCount - entryIndex;
 
                 // next node
                 if (header.RightSiblingPageNumber.IsEmpty)
@@ -569,11 +743,7 @@ class TreeWalker
                     return count;
                 }
 
-                var pageNumber = header.RightSiblingPageNumber;
-                while (!PageCache.TryGet(pageNumber, out page))
-                {
-                    PageCache.Load(pageNumber);
-                }
+                page = PageCache.GetOrLoad(header.RightSiblingPageNumber);
                 entryIndex = 0;
             }
             finally
@@ -598,29 +768,25 @@ class TreeWalker
         // find start position
         if (startKey.IsEmpty)
         {
-            var minValue = GetMinValue();
-            if (!minValue.HasValue)
+            var minLeaf = GetMinLeaf();
+            if (!minLeaf.HasValue)
             {
                 return 0;
             }
-            page = minValue.Value.Page;
+            page = minLeaf.Value.Page;
             entryIndex = 0;
         }
         else
         {
-            PageNumber? nextPageNumber = RootPageNumber;
-            while (!TrySearch(
-                       nextPageNumber.Value,
-                       startKey.Span,
-                       startKeyExclusive ? SearchOperator.UpperBound : SearchOperator.LowerBound,
-                       out page,
-                       out entryIndex,
-                       out nextPageNumber))
+            (var startPage, entryIndex) = await SearchAsync(
+                startKey,
+                startKeyExclusive ? SearchOperator.UpperBound : SearchOperator.LowerBound,
+                cancellationToken).ConfigureAwait(false);
+            if (startPage == null)
             {
-                if (!nextPageNumber.HasValue) return 0;
-
-                await PageCache.LoadAsync(nextPageNumber.Value, cancellationToken).ConfigureAwait(false);
+                return 0;
             }
+            page = startPage;
         }
 
         var count = 0;
@@ -640,31 +806,19 @@ class TreeWalker
                     throw new InvalidOperationException("Invalid node kind");
                 }
 
-                var leafNode = new LeafNodeReader(pageSpan, header.EntryCount);
-                while (entryIndex < header.EntryCount)
+                // Entries within a leaf are sorted: locate the end bound with one binary
+                // search instead of comparing every entry.
+                if (!endKey.IsEmpty)
                 {
-                    leafNode.GetAt(
-                        entryIndex,
-                        out var pageOffset,
-                        out var keyLength,
-                        out var valueLength);
-
-                    // check end key
-                    if (!endKey.IsEmpty)
+                    var leafNode = new LeafNodeReader(pageSpan, header.EntryCount);
+                    var op = endKeyExclusive ? SearchOperator.LowerBound : SearchOperator.UpperBound;
+                    if (leafNode.TrySearch(endKey.Span, op, comparer, out var boundIndex))
                     {
-                        var key = MemoryMarshal.CreateReadOnlySpan(
-                            ref Unsafe.Add(ref MemoryMarshal.GetReference(pageSpan), pageOffset),
-                            keyLength);
-                        var compared = KeyCompare.Compare(comparer, key, endKey.Span);
-                        if (compared > 0 || (endKeyExclusive && compared == 0))
-                        {
-                            return count;
-                        }
+                        // The range ends inside this leaf.
+                        return count + Math.Max(0, boundIndex - entryIndex);
                     }
-
-                    count++;
-                    entryIndex++;
                 }
+                count += header.EntryCount - entryIndex;
 
                 // next node
                 if (header.RightSiblingPageNumber.IsEmpty)
@@ -672,11 +826,8 @@ class TreeWalker
                     return count;
                 }
 
-                var pageNumber = header.RightSiblingPageNumber;
-                while (!PageCache.TryGet(pageNumber, out page))
-                {
-                    await PageCache.LoadAsync(pageNumber, cancellationToken).ConfigureAwait(false);
-                }
+                page = await PageCache.GetOrLoadAsync(header.RightSiblingPageNumber, cancellationToken)
+                    .ConfigureAwait(false);
                 entryIndex = 0;
             }
             finally
@@ -696,14 +847,8 @@ class TreeWalker
         // Read the blob page number from the leaf's inline payload (8 bytes)
         var blobPageNumberValue = Unsafe.ReadUnaligned<long>(
             ref Unsafe.Add(ref MemoryMarshal.GetReference(leafPage.Memory.Span), valueOffset));
-        var blobPageNumber = new PageNumber(blobPageNumberValue);
 
-        IPageEntry blobPage;
-        while (!PageCache.TryGet(blobPageNumber, out blobPage))
-        {
-            PageCache.Load(blobPageNumber);
-        }
-
+        var blobPage = PageCache.GetOrLoad(new PageNumber(blobPageNumberValue));
         var blobLength = blobPage.GetLength() - BlobDataOffset;
         return new PageSlice(blobPage, BlobDataOffset, blobLength);
     }
@@ -717,174 +862,10 @@ class TreeWalker
 
         var blobPageNumberValue = Unsafe.ReadUnaligned<long>(
             ref Unsafe.Add(ref MemoryMarshal.GetReference(leafPage.Memory.Span), valueOffset));
-        var blobPageNumber = new PageNumber(blobPageNumberValue);
 
-        IPageEntry blobPage;
-        while (!PageCache.TryGet(blobPageNumber, out blobPage))
-        {
-            await PageCache.LoadAsync(blobPageNumber, ct).ConfigureAwait(false);
-        }
-
+        var blobPage = await PageCache.GetOrLoadAsync(new PageNumber(blobPageNumberValue), ct).ConfigureAwait(false);
         var blobLength = blobPage.GetLength() - BlobDataOffset;
         return new PageSlice(blobPage, BlobDataOffset, blobLength);
-    }
-
-    internal bool TryFindFrom(
-        PageNumber from,
-        scoped ReadOnlySpan<byte> key,
-        out int entryIndex,
-        out PageSlice value,
-        out PageNumber? next)
-    {
-        var pageNumber = from;
-        while (true)
-        {
-            if (!TryGetPage(pageNumber, out var page, out var pinned))
-            {
-                entryIndex = default;
-                value = default;
-                next = pageNumber;
-                return false;
-            }
-
-            var pageSpan = page.Memory.Span;
-            var header = NodeHeader.Parse(pageSpan);
-            if (header.Kind == NodeKind.Internal)
-            {
-                var internalNode = new InternalNodeReader(pageSpan, header.EntryCount);
-                if (!internalNode.TrySearch(key, comparer, out pageNumber))
-                {
-                    if (!pinned) page.Release();
-                    entryIndex = default;
-                    value = default;
-                    next = null;
-                    return false;
-                }
-
-                if (!pinned) page.Release();
-            }
-            else // Leaf
-            {
-                next = null;
-
-                var leafNode = new LeafNodeReader(pageSpan, header.EntryCount);
-                if (leafNode.TryFindValue(key, comparer, out entryIndex, out var valueOffset, out var valueLength))
-                {
-                    if (LeafNodeReader.IsOverflow(valueLength))
-                    {
-                        var resolved = ResolveValue(page, valueOffset, valueLength);
-                        if (!pinned) page.Release();
-                        value = resolved;
-                    }
-                    else
-                    {
-                        // The caller releases the page via PageSlice.Dispose; the pin must
-                        // stay balanced, so hand out an extra reference.
-                        if (pinned) page.Retain();
-                        value = new PageSlice(page, valueOffset, valueLength);
-                    }
-                    return true;
-                }
-
-                if (!pinned) page.Release();
-                value = default;
-                return false;
-            }
-        }
-    }
-
-    /// <summary>
-    /// Get a page from the cache. The root page is served from <see cref="pinnedRoot"/>
-    /// without touching the cache; <paramref name="pinned"/> indicates that the returned
-    /// entry holds no extra reference and must not be released by the caller.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    bool TryGetPage(PageNumber pageNumber, out IPageEntry page, out bool pinned)
-    {
-        if (pageNumber == RootPageNumber)
-        {
-            var root = pinnedRoot;
-            if (root != null)
-            {
-                page = root;
-                pinned = true;
-                return true;
-            }
-
-            if (!PageCache.TryGet(pageNumber, out page))
-            {
-                pinned = false;
-                return false;
-            }
-
-            // Transfer the reference we just acquired to the pin. If another thread won
-            // the race, keep using our own reference (released by the caller as usual).
-            pinned = Interlocked.CompareExchange(ref pinnedRoot, page, null) == null;
-            return true;
-        }
-
-        pinned = false;
-        return PageCache.TryGet(pageNumber, out page);
-    }
-
-    internal bool TrySearch(
-        scoped ReadOnlySpan<byte> key,
-        SearchOperator op,
-        out IPageEntry page,
-        out int index,
-        out PageNumber? nextPageNumber) =>
-        TrySearch(RootPageNumber, key, op, out page, out index, out nextPageNumber);
-
-    internal bool TrySearch(
-        PageNumber from,
-        scoped ReadOnlySpan<byte> key,
-        SearchOperator op,
-        out IPageEntry page,
-        out int index,
-        out PageNumber? nextPageNumber)
-    {
-        var pageNumber = from;
-        while (true)
-        {
-            if (!TryGetPage(pageNumber, out page, out var pinned))
-            {
-                index = default;
-                nextPageNumber = pageNumber;
-                return false;
-            }
-
-            var pageSpan = page.Memory.Span;
-            var header = NodeHeader.Parse(pageSpan);
-            if (header.Kind == NodeKind.Internal)
-            {
-                var internalNode = new InternalNodeReader(pageSpan, header.EntryCount);
-                if (!internalNode.TrySearch(key, comparer, out pageNumber))
-                {
-                    if (!pinned) page.Release();
-                    index = default;
-                    nextPageNumber = null;
-                    return false;
-                }
-
-                if (!pinned) page.Release();
-            }
-            else // Leaf
-            {
-                nextPageNumber = null;
-
-                var leafNode = new LeafNodeReader(pageSpan, header.EntryCount);
-                if (leafNode.TrySearch(key, op, comparer, out index))
-                {
-                    // The caller owns (and releases) the returned leaf page.
-                    if (pinned) page.Retain();
-                    return true;
-                }
-
-                if (!pinned) page.Release();
-                index = default;
-                return false;
-            }
-        }
     }
 
     internal SingleValueResult GetMinValue()
@@ -938,34 +919,29 @@ class TreeWalker
         var pageNumber = RootPageNumber;
         while (true)
         {
-            IPageEntry page;
-            while (!PageCache.TryGet(pageNumber, out page))
-            {
-                PageCache.Load(pageNumber);
-            }
-
-            var pageSpan = page.Memory.Span;
+            var lease = GetPage(pageNumber);
+            var pageSpan = lease.Page.Memory.Span;
             var header = NodeHeader.Parse(pageSpan);
             if (header.Kind == NodeKind.Internal)
             {
                 if (header.EntryCount <= 0)
                 {
-                    page.Release();
+                    lease.Release();
                     return null;
                 }
 
                 var internalNode = new InternalNodeReader(pageSpan, header.EntryCount);
                 internalNode.GetAt(0, out _, out pageNumber);
-                page.Release();
+                lease.Release();
             }
             else // Leaf
             {
                 if (header.EntryCount <= 0)
                 {
-                    page.Release();
+                    lease.Release();
                     return null;
                 }
-                return (page, 0);
+                return (lease.Take(), 0);
             }
         }
     }
@@ -975,32 +951,29 @@ class TreeWalker
         var pageNumber = RootPageNumber;
         while (true)
         {
-            IPageEntry page;
-            while (!PageCache.TryGet(pageNumber, out page))
-            {
-                PageCache.Load(pageNumber);
-            }
-
-            var pageSpan = page.Memory.Span;
+            var lease = GetPage(pageNumber);
+            var pageSpan = lease.Page.Memory.Span;
             var header = NodeHeader.Parse(pageSpan);
             if (header.Kind == NodeKind.Internal)
             {
                 if (header.EntryCount <= 0)
                 {
+                    lease.Release();
                     return null;
                 }
 
                 var internalNode = new InternalNodeReader(pageSpan, header.EntryCount);
                 internalNode.GetAt(header.EntryCount - 1, out _, out pageNumber);
-                page.Release();
+                lease.Release();
             }
             else // Leaf
             {
                 if (header.EntryCount <= 0)
                 {
+                    lease.Release();
                     return null;
                 }
-                return (page, header.EntryCount - 1);
+                return (lease.Take(), header.EntryCount - 1);
             }
         }
     }
@@ -1014,79 +987,32 @@ class TreeWalker
             return GetMaxValueLeaf();
         }
 
-        // Find the leaf page containing endKey using UpperBound or LowerBound
-        PageNumber? nextPageNumber = RootPageNumber;
-        IPageEntry page;
-        int entryIndex;
-
+        // Find the first entry beyond the end bound, then step one back.
         var op = endKeyExclusive ? SearchOperator.LowerBound : SearchOperator.UpperBound;
-        if (TrySearch(nextPageNumber.Value, endKey, op, out page, out entryIndex, out nextPageNumber))
+        if (!Search(endKey, op, out var page, out var entryIndex))
         {
-            // TrySearch found an entry at entryIndex. We want the entry just before it.
-            entryIndex--;
-            if (entryIndex < 0)
-            {
-                // Need to go to the left sibling page
-                var header = NodeHeader.Parse(page.Memory.Span);
-                if (header.LeftSiblingPageNumber.IsEmpty)
-                {
-                    page.Release();
-                    return null;
-                }
-
-                var leftPageNumber = header.LeftSiblingPageNumber;
-                page.Release();
-
-                while (!PageCache.TryGet(leftPageNumber, out page))
-                {
-                    PageCache.Load(leftPageNumber);
-                }
-                var leftHeader = NodeHeader.Parse(page.Memory.Span);
-                entryIndex = leftHeader.EntryCount - 1;
-            }
-            return (page, entryIndex);
-        }
-
-        if (!nextPageNumber.HasValue)
-        {
-            // TrySearch returned false and no next page - all entries satisfy the condition
-            // Re-search from root to find the leaf and use its last entry
-            // This means endKey is beyond all entries, so use max leaf
+            // Every entry satisfies the bound: start from the maximum.
             return GetMaxValueLeaf();
         }
 
-        // Need to load more pages
-        while (nextPageNumber.HasValue)
+        entryIndex--;
+        if (entryIndex < 0)
         {
-            PageCache.Load(nextPageNumber.Value);
-            if (TrySearch(nextPageNumber.Value, endKey, op, out page, out entryIndex, out nextPageNumber))
+            // Need to go to the left sibling page
+            var header = NodeHeader.Parse(page.Memory.Span);
+            if (header.LeftSiblingPageNumber.IsEmpty)
             {
-                entryIndex--;
-                if (entryIndex < 0)
-                {
-                    var header = NodeHeader.Parse(page.Memory.Span);
-                    if (header.LeftSiblingPageNumber.IsEmpty)
-                    {
-                        page.Release();
-                        return null;
-                    }
-
-                    var leftPageNumber = header.LeftSiblingPageNumber;
-                    page.Release();
-
-                    while (!PageCache.TryGet(leftPageNumber, out page))
-                    {
-                        PageCache.Load(leftPageNumber);
-                    }
-                    var leftHeader = NodeHeader.Parse(page.Memory.Span);
-                    entryIndex = leftHeader.EntryCount - 1;
-                }
-                return (page, entryIndex);
+                page.Release();
+                return null;
             }
-        }
 
-        // endKey is beyond all entries
-        return GetMaxValueLeaf();
+            var leftPageNumber = header.LeftSiblingPageNumber;
+            page.Release();
+
+            page = PageCache.GetOrLoad(leftPageNumber);
+            entryIndex = NodeHeader.Parse(page.Memory.Span).EntryCount - 1;
+        }
+        return (page, entryIndex);
     }
 
     async ValueTask<(IPageEntry Page, int EntryIndex)?> FindDescendingStartAsync(
@@ -1099,69 +1025,30 @@ class TreeWalker
             return GetMaxValueLeaf();
         }
 
-        PageNumber? nextPageNumber = RootPageNumber;
-
         var op = endKeyExclusive ? SearchOperator.LowerBound : SearchOperator.UpperBound;
-        if (TrySearch(nextPageNumber.Value, endKey.Span, op, out var page, out var entryIndex, out nextPageNumber))
-        {
-            entryIndex--;
-            if (entryIndex < 0)
-            {
-                var header = NodeHeader.Parse(page.Memory.Span);
-                if (header.LeftSiblingPageNumber.IsEmpty)
-                {
-                    page.Release();
-                    return null;
-                }
-
-                var leftPageNumber = header.LeftSiblingPageNumber;
-                page.Release();
-
-                while (!PageCache.TryGet(leftPageNumber, out page))
-                {
-                    await PageCache.LoadAsync(leftPageNumber, cancellationToken).ConfigureAwait(false);
-                }
-                var leftHeader = NodeHeader.Parse(page.Memory.Span);
-                entryIndex = leftHeader.EntryCount - 1;
-            }
-            return (page, entryIndex);
-        }
-
-        if (!nextPageNumber.HasValue)
+        var (page, entryIndex) = await SearchAsync(endKey, op, cancellationToken).ConfigureAwait(false);
+        if (page == null)
         {
             return GetMaxValueLeaf();
         }
 
-        while (nextPageNumber.HasValue)
+        entryIndex--;
+        if (entryIndex < 0)
         {
-            await PageCache.LoadAsync(nextPageNumber.Value, cancellationToken).ConfigureAwait(false);
-            if (TrySearch(nextPageNumber.Value, endKey.Span, op, out page, out entryIndex, out nextPageNumber))
+            var header = NodeHeader.Parse(page.Memory.Span);
+            if (header.LeftSiblingPageNumber.IsEmpty)
             {
-                entryIndex--;
-                if (entryIndex < 0)
-                {
-                    var header = NodeHeader.Parse(page.Memory.Span);
-                    if (header.LeftSiblingPageNumber.IsEmpty)
-                    {
-                        page.Release();
-                        return null;
-                    }
-
-                    var leftPageNumber = header.LeftSiblingPageNumber;
-                    page.Release();
-
-                    while (!PageCache.TryGet(leftPageNumber, out page))
-                    {
-                        await PageCache.LoadAsync(leftPageNumber, cancellationToken).ConfigureAwait(false);
-                    }
-                    var leftHeader = NodeHeader.Parse(page.Memory.Span);
-                    entryIndex = leftHeader.EntryCount - 1;
-                }
-                return (page, entryIndex);
+                page.Release();
+                return null;
             }
-        }
 
-        return GetMaxValueLeaf();
+            var leftPageNumber = header.LeftSiblingPageNumber;
+            page.Release();
+
+            page = await PageCache.GetOrLoadAsync(leftPageNumber, cancellationToken).ConfigureAwait(false);
+            entryIndex = NodeHeader.Parse(page.Memory.Span).EntryCount - 1;
+        }
+        return (page, entryIndex);
     }
 
     void ValidateRange(ReadOnlySpan<byte> startKey, ReadOnlySpan<byte> endKey)

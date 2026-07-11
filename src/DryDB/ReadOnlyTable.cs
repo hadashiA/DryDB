@@ -41,6 +41,23 @@ public sealed class ReadOnlyTable : IKeyValueStore
         }
     }
 
+    internal void ReleasePinnedPages()
+    {
+        primaryKeyTree.ReleasePinnedRoot();
+        foreach (var query in secondaryIndexQueries.Values)
+        {
+            switch (query)
+            {
+                case SecondaryIndexQuery q:
+                    q.ReleasePinnedPages();
+                    break;
+                case NonUniqueSecondaryIndexQuery q:
+                    q.ReleasePinnedPages();
+                    break;
+            }
+        }
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public SingleValueResult Get(ReadOnlySpan<byte> key) => primaryKeyTree.Get(key);
 

@@ -147,3 +147,6 @@ src/DryDB.Unity/Assets/Packages/*
 ### Internal Unity Packages in bin/Debug ###
 !src/DryDB/bin/Debug/netstandard2.1/package.json
 !src/DryDB.Compression/bin/Debug/netstandard2.1/package.json
+
+### BenchmarkDotNet output ###
+BenchmarkDotNet.Artifacts/

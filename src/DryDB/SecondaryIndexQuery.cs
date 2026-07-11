@@ -17,6 +17,8 @@ public class SecondaryIndexQuery : IKeyValueStore
         tree = new TreeWalker(descriptor.RootPageNumber, pageCache, descriptor.KeyEncoding);
     }
 
+    internal void ReleasePinnedPages() => tree.ReleasePinnedRoot();
+
     public SingleValueResult Get(ReadOnlySpan<byte> key)
     {
         using var result = tree.Get(key);
@@ -27,11 +29,7 @@ public class SecondaryIndexQuery : IKeyValueStore
 
         var pageRef = PageRef.Parse(result.Value.Span);
 
-        IPageEntry page;
-        while (!tree.PageCache.TryGet(pageRef.PageNumber, out page))
-        {
-            tree.PageCache.Load(pageRef.PageNumber);
-        }
+        var page = tree.PageCache.GetOrLoad(pageRef.PageNumber);
 
         var pageSlice = new PageSlice(page, pageRef.Start, pageRef.Length);
         return new SingleValueResult(pageSlice, true);
@@ -49,11 +47,7 @@ public class SecondaryIndexQuery : IKeyValueStore
 
         var pageRef = PageRef.Parse(result.Value.Span);
 
-        IPageEntry page;
-        while (!tree.PageCache.TryGet(pageRef.PageNumber, out page))
-        {
-            await tree.PageCache.LoadAsync(pageRef.PageNumber, cancellationToken);
-        }
+        var page = await tree.PageCache.GetOrLoadAsync(pageRef.PageNumber, cancellationToken);
 
         var pageSlice = new PageSlice(page, pageRef.Start, pageRef.Length);
         return new SingleValueResult(pageSlice, true);
@@ -76,11 +70,7 @@ public class SecondaryIndexQuery : IKeyValueStore
         foreach (var x in pageRefs)
         {
             var pageRef = PageRef.Parse(x.Span);
-            IPageEntry page;
-            while (!tree.PageCache.TryGet(pageRef.PageNumber, out page))
-            {
-                tree.PageCache.Load(pageRef.PageNumber);
-            }
+            var page = tree.PageCache.GetOrLoad(pageRef.PageNumber);
             result.Add(page, pageRef.Start, pageRef.Length);
             page.Release();
         }
@@ -106,11 +96,7 @@ public class SecondaryIndexQuery : IKeyValueStore
         foreach (var x in pageRefs)
         {
             var pageRef = PageRef.Parse(x.Span);
-            IPageEntry page;
-            while (!tree.PageCache.TryGet(pageRef.PageNumber, out page))
-            {
-                await tree.PageCache.LoadAsync(pageRef.PageNumber, cancellationToken);
-            }
+            var page = await tree.PageCache.GetOrLoadAsync(pageRef.PageNumber, cancellationToken);
             result.Add(page, pageRef.Start, pageRef.Length);
             page.Release();
         }
