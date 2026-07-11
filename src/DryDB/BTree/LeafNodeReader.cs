@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
+using DryDB.Internal;
 
 namespace DryDB.BTree;
 
@@ -71,14 +72,39 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount)
         out int valueOffset,
         out ushort valueLength)
     {
-        if (TrySearch(key, SearchOperator.Equal, keyEncoding, out index))
+#if NETSTANDARD
+        ref var pageReference = ref MemoryMarshal.GetReference(page);
+#endif
+        var min = 0;
+        var max = entryCount;
+
+        while (min < max)
         {
-            var meta = GetMeta(index);
-            valueOffset = meta.PageOffset + meta.KeyLength;
-            valueLength = meta.ValueLength;
-            return true;
+            var midIndex = min + ((max - min) >> 1);
+            var midMeta = GetMeta(midIndex);
+
+            ref var ptr = ref Unsafe.Add(ref pageReference, midMeta.PageOffset);
+            var midKey = MemoryMarshal.CreateReadOnlySpan(ref ptr, midMeta.KeyLength);
+
+            var compared = KeyCompare.Compare(keyEncoding, midKey, key);
+            if (compared == 0)
+            {
+                index = midIndex;
+                valueOffset = midMeta.PageOffset + midMeta.KeyLength;
+                valueLength = midMeta.ValueLength;
+                return true;
+            }
+            if (compared < 0)
+            {
+                min = midIndex + 1;
+            }
+            else
+            {
+                max = midIndex;
+            }
         }
 
+        index = default;
         valueOffset = default;
         valueLength = default;
         return false;
@@ -106,7 +132,7 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount)
             ref var ptr = ref Unsafe.Add(ref pageReference, midMeta.PageOffset);
             var midKey = MemoryMarshal.CreateReadOnlySpan(ref ptr, midMeta.KeyLength);
 
-            var compared = keyEncoding.Compare(midKey, key);
+            var compared = KeyCompare.Compare(keyEncoding, midKey, key);
             switch (op)
             {
                 case SearchOperator.Equal:
@@ -166,7 +192,7 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount)
                     var meta = GetMeta(min);
                     ref var ptr = ref Unsafe.Add(ref pageReference, meta.PageOffset);
                     var foundKey = MemoryMarshal.CreateReadOnlySpan(ref ptr, meta.KeyLength);
-                    if (keyEncoding.Compare(foundKey, key) == 0)
+                    if (KeyCompare.Compare(keyEncoding, foundKey, key) == 0)
                     {
                         index = min;
                         return true;

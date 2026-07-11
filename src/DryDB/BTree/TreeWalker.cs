@@ -22,6 +22,11 @@ class TreeWalker
 
     readonly IKeyEncoding comparer;
 
+    // The root page is touched by every lookup. Keep one retained reference here so the
+    // hot path can skip the cache lookup + refcount traffic for it. The pin lives for the
+    // lifetime of the TreeWalker; the underlying buffer is reclaimed by the GC afterwards.
+    IPageEntry? pinnedRoot;
+
     static readonly int BlobDataOffset = Unsafe.SizeOf<PageHeader>() + Unsafe.SizeOf<NodeHeader>();
 
     internal TreeWalker(
@@ -156,7 +161,7 @@ class TreeWalker
                         var key = MemoryMarshal.CreateReadOnlySpan(
                             ref Unsafe.Add(ref MemoryMarshal.GetReference(pageSpan), pageOffset),
                             keyLength);
-                        var compared = KeyEncoding.Compare(key, endKey);
+                        var compared = KeyCompare.Compare(comparer, key, endKey);
                         if (compared > 0 || (endKeyExclusive && compared == 0))
                         {
                             return result;
@@ -234,7 +239,7 @@ class TreeWalker
                         var key = MemoryMarshal.CreateReadOnlySpan(
                             ref Unsafe.Add(ref MemoryMarshal.GetReference(pageSpan), pageOffset),
                             keyLength);
-                        var compared = KeyEncoding.Compare(key, startKey);
+                        var compared = KeyCompare.Compare(comparer, key, startKey);
                         if (compared < 0 || (startKeyExclusive && compared == 0))
                         {
                             return result;
@@ -349,9 +354,10 @@ class TreeWalker
                     // check end key
                     if (!endKey.IsEmpty)
                     {
-                        var compared = KeyEncoding.Compare(
-                            currentPage.Memory.Slice(pageOffset, keyLength),
-                            endKey);
+                        var compared = KeyCompare.Compare(
+                            comparer,
+                            currentPage.Memory.Span.Slice(pageOffset, keyLength),
+                            endKey.Span);
                         if (compared > 0 || (endKeyExclusive && compared == 0))
                         {
                             return result;
@@ -430,9 +436,10 @@ class TreeWalker
                     // check start key (lower bound for descending)
                     if (!startKey.IsEmpty)
                     {
-                        var compared = KeyEncoding.Compare(
-                            currentPage.Memory.Slice(pageOffset, keyLength),
-                            startKey);
+                        var compared = KeyCompare.Compare(
+                            comparer,
+                            currentPage.Memory.Span.Slice(pageOffset, keyLength),
+                            startKey.Span);
                         if (compared < 0 || (startKeyExclusive && compared == 0))
                         {
                             return result;
@@ -545,7 +552,7 @@ class TreeWalker
                         var key = MemoryMarshal.CreateReadOnlySpan(
                             ref Unsafe.Add(ref MemoryMarshal.GetReference(pageSpan), pageOffset),
                             keyLength);
-                        var compared = KeyEncoding.Compare(key, endKey);
+                        var compared = KeyCompare.Compare(comparer, key, endKey);
                         if (compared > 0 || (endKeyExclusive && compared == 0))
                         {
                             return count;
@@ -648,7 +655,7 @@ class TreeWalker
                         var key = MemoryMarshal.CreateReadOnlySpan(
                             ref Unsafe.Add(ref MemoryMarshal.GetReference(pageSpan), pageOffset),
                             keyLength);
-                        var compared = KeyEncoding.Compare(key, endKey.Span);
+                        var compared = KeyCompare.Compare(comparer, key, endKey.Span);
                         if (compared > 0 || (endKeyExclusive && compared == 0))
                         {
                             return count;
@@ -732,7 +739,7 @@ class TreeWalker
         var pageNumber = from;
         while (true)
         {
-            if (!PageCache.TryGet(pageNumber, out var page))
+            if (!TryGetPage(pageNumber, out var page, out var pinned))
             {
                 entryIndex = default;
                 value = default;
@@ -745,42 +752,79 @@ class TreeWalker
             if (header.Kind == NodeKind.Internal)
             {
                 var internalNode = new InternalNodeReader(pageSpan, header.EntryCount);
-                if (!internalNode.TrySearch(key, KeyEncoding, out pageNumber))
+                if (!internalNode.TrySearch(key, comparer, out pageNumber))
                 {
-                    page.Release();
+                    if (!pinned) page.Release();
                     entryIndex = default;
                     value = default;
                     next = null;
                     return false;
                 }
 
-                page.Release();
+                if (!pinned) page.Release();
             }
             else // Leaf
             {
                 next = null;
 
                 var leafNode = new LeafNodeReader(pageSpan, header.EntryCount);
-                if (leafNode.TryFindValue(key, KeyEncoding, out entryIndex, out var valueOffset, out var valueLength))
+                if (leafNode.TryFindValue(key, comparer, out entryIndex, out var valueOffset, out var valueLength))
                 {
                     if (LeafNodeReader.IsOverflow(valueLength))
                     {
                         var resolved = ResolveValue(page, valueOffset, valueLength);
-                        page.Release();
+                        if (!pinned) page.Release();
                         value = resolved;
                     }
                     else
                     {
+                        // The caller releases the page via PageSlice.Dispose; the pin must
+                        // stay balanced, so hand out an extra reference.
+                        if (pinned) page.Retain();
                         value = new PageSlice(page, valueOffset, valueLength);
                     }
                     return true;
                 }
 
-                page.Release();
+                if (!pinned) page.Release();
                 value = default;
                 return false;
             }
         }
+    }
+
+    /// <summary>
+    /// Get a page from the cache. The root page is served from <see cref="pinnedRoot"/>
+    /// without touching the cache; <paramref name="pinned"/> indicates that the returned
+    /// entry holds no extra reference and must not be released by the caller.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    bool TryGetPage(PageNumber pageNumber, out IPageEntry page, out bool pinned)
+    {
+        if (pageNumber == RootPageNumber)
+        {
+            var root = pinnedRoot;
+            if (root != null)
+            {
+                page = root;
+                pinned = true;
+                return true;
+            }
+
+            if (!PageCache.TryGet(pageNumber, out page))
+            {
+                pinned = false;
+                return false;
+            }
+
+            // Transfer the reference we just acquired to the pin. If another thread won
+            // the race, keep using our own reference (released by the caller as usual).
+            pinned = Interlocked.CompareExchange(ref pinnedRoot, page, null) == null;
+            return true;
+        }
+
+        pinned = false;
+        return PageCache.TryGet(pageNumber, out page);
     }
 
     internal bool TrySearch(
@@ -802,7 +846,7 @@ class TreeWalker
         var pageNumber = from;
         while (true)
         {
-            if (!PageCache.TryGet(pageNumber, out page))
+            if (!TryGetPage(pageNumber, out page, out var pinned))
             {
                 index = default;
                 nextPageNumber = pageNumber;
@@ -816,13 +860,13 @@ class TreeWalker
                 var internalNode = new InternalNodeReader(pageSpan, header.EntryCount);
                 if (!internalNode.TrySearch(key, comparer, out pageNumber))
                 {
-                    page.Release();
+                    if (!pinned) page.Release();
                     index = default;
                     nextPageNumber = null;
                     return false;
                 }
 
-                page.Release();
+                if (!pinned) page.Release();
             }
             else // Leaf
             {
@@ -831,10 +875,12 @@ class TreeWalker
                 var leafNode = new LeafNodeReader(pageSpan, header.EntryCount);
                 if (leafNode.TrySearch(key, op, comparer, out index))
                 {
+                    // The caller owns (and releases) the returned leaf page.
+                    if (pinned) page.Retain();
                     return true;
                 }
 
-                page.Release();
+                if (!pinned) page.Release();
                 index = default;
                 return false;
             }

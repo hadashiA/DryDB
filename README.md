@@ -5,12 +5,12 @@
 
 DryDB is a read-only embedded B+Tree based key/value database, implemented pure C#.
 
-```
-| Method             | Mean        | Error     | StdDev    |
-|------------------- |------------:|----------:|----------:|
-| DryDB_FindByKey    |    37.57 us |  0.230 us |  0.120 us |
-| CsSqlite_FindByKey | 4,322.48 us | 44.492 us | 26.476 us |
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/benchmarks/point_lookup_dark.svg">
+  <img alt="Point lookup benchmark: DryDB 29 ns, RocksDB 241 ns, SQLite (prepared + immutable) 943 ns, SQLite (default) 6,656 ns per query" src="docs/benchmarks/point_lookup_light.svg">
+</picture>
+
+See [Performance](#performance) for details.
 
 ## Features
 
@@ -43,6 +43,64 @@ DryDB is a read-only embedded B+Tree based key/value database, implemented pure 
   - By manipulating the cursor, large areas can be accessed sequentially.
 - CLI tool
 - Support for large BLOBs. (Values exceeding 65,536 bytes are stored on a separated page.)
+
+## Performance
+
+All benchmarks read a table of 10,000 rows (int64 primary key, 13-byte value) with 4 KB pages, on Apple M-series / .NET 10, measured with BenchmarkDotNet. Lower is better.
+
+Two SQLite configurations are shown to keep the comparison fair:
+
+- **default** — a command is created and parsed for every query (typical naive usage)
+- **prepared + immutable** — the statement is prepared once and reused, and the file is opened with [`immutable=1`](https://www.sqlite.org/uri.html#uriimmutable), the fastest read-only setup SQLite offers
+
+### Point lookup
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/benchmarks/point_lookup_dark.svg">
+  <img alt="Point lookup benchmark: DryDB 29 ns, RocksDB 241 ns, SQLite (prepared + immutable) 943 ns, SQLite (default) 6,656 ns per query" src="docs/benchmarks/point_lookup_light.svg">
+</picture>
+
+### Range scan
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/benchmarks/range_scan_dark.svg">
+  <img alt="Range scan benchmark (100 rows): DryDB 1.4 µs, SQLite (prepared + immutable) 9.6 µs, RocksDB 14.0 µs, SQLite (default) 17.4 µs per query" src="docs/benchmarks/range_scan_light.svg">
+</picture>
+
+### Count by key range
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/benchmarks/count_range_dark.svg">
+  <img alt="Count benchmark (8,000 rows): DryDB 15.2 µs, SQLite (default) 108 µs, SQLite (prepared + immutable) 117 µs, RocksDB 982 µs per query" src="docs/benchmarks/count_range_light.svg">
+</picture>
+
+<details>
+<summary>Raw BenchmarkDotNet results</summary>
+
+1 op = 1000 queries for point lookup, 100 queries for range scan and count.
+
+| Type           | Method                   | Mean         | Error        | StdDev       | Allocated  |
+|--------------- |------------------------- |-------------:|-------------:|-------------:|-----------:|
+| ReadBenchmark  | DryDB_FindByKey          |     29.00 us |     2.133 us |     1.269 us |          - |
+| ReadBenchmark  | RocksDB_FindByKey        |    240.74 us |    42.123 us |    27.862 us |    40032 B |
+| ReadBenchmark  | CsSqlite_FindByKey_Fair  |    943.04 us |   152.115 us |   100.615 us |    48000 B |
+| ReadBenchmark  | CsSqlite_FindByKey       |  6,655.59 us |   557.215 us |   368.563 us |    48000 B |
+| RangeBenchmark | DryDB_GetRange           |    140.02 us |     6.377 us |     4.218 us |          - |
+| RangeBenchmark | CsSqlite_GetRange_Fair   |    958.48 us |   124.718 us |    82.493 us |   480000 B |
+| RangeBenchmark | RocksDB_GetRange         |  1,396.66 us |   157.288 us |   104.036 us |   726432 B |
+| RangeBenchmark | CsSqlite_GetRange        |  1,743.15 us |   218.851 us |   144.757 us |   480000 B |
+| CountBenchmark | DryDB_CountRange         |  1,524.56 us |   123.628 us |    81.772 us |          - |
+| CountBenchmark | CsSqlite_CountRange      | 10,796.05 us |   956.138 us |   632.426 us |          - |
+| CountBenchmark | CsSqlite_CountRange_Fair | 11,715.51 us |   926.636 us |   551.426 us |          - |
+| CountBenchmark | RocksDB_CountRange       | 98,221.60 us | 5,595.564 us | 3,701.119 us | 25606432 B |
+
+</details>
+
+> [!NOTE]
+> DryDB returns values as zero-copy slices of cached pages, so read paths allocate no managed memory.
+> The RocksDB numbers go through the C# binding ([rocksdb-sharp](https://github.com/curiosity-ai/rocksdb-sharp)), whose iterator allocates a `byte[]` per key/value access — the count benchmark in particular is dominated by that binding overhead rather than the storage engine itself.
+
+The benchmark source is in [sandbox/DryDB.Benchmark](sandbox/DryDB.Benchmark).
 
 ## Why read-only ?
 

@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -53,6 +54,7 @@ public sealed class ReadOnlyDatabase : IDisposable
     public Catalog Catalog { get; }
     readonly IPageLoader pageLoader;
     readonly PageCache pageCache;
+    readonly Dictionary<string, ReadOnlyTable> tables;
 
     ReadOnlyDatabase(Catalog catalog, IPageLoader pageLoader, int cacheSize)
     {
@@ -60,6 +62,12 @@ public sealed class ReadOnlyDatabase : IDisposable
         this.pageLoader = pageLoader;
         var pageCacheCapacity = Math.Max(cacheSize / catalog.PageSize, 8);
         pageCache = new PageCache(pageLoader, pageCacheCapacity, catalog.Filters?.ToArray() ?? []);
+
+        tables = new Dictionary<string, ReadOnlyTable>(catalog.TableDescriptors.Count);
+        foreach (var descriptor in catalog.TableDescriptors.Values)
+        {
+            tables.Add(descriptor.Name, new ReadOnlyTable(descriptor, pageCache));
+        }
     }
 
     public void Dispose()
@@ -68,9 +76,5 @@ public sealed class ReadOnlyDatabase : IDisposable
         pageLoader.Dispose();
     }
 
-    public ReadOnlyTable GetTable(string name)
-    {
-        var descriptor = Catalog.TableDescriptors[name];
-        return new ReadOnlyTable(descriptor, pageCache);
-    }
+    public ReadOnlyTable GetTable(string name) => tables[name];
 }
