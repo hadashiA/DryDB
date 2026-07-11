@@ -354,22 +354,25 @@ class TreeWalker
                 }
 
                 var leafNode = new LeafNodeReader(pageSpan, header.EntryCount);
-                while (entryIndex < header.EntryCount)
+
+                // Entries within a leaf are sorted: locate the end bound with one binary
+                // search instead of comparing every entry.
+                var stopIndex = header.EntryCount;
+                var endsInThisLeaf = false;
+                if (!endKey.IsEmpty)
+                {
+                    var op = endKeyExclusive ? SearchOperator.LowerBound : SearchOperator.UpperBound;
+                    if (leafNode.TrySearch(endKey, op, comparer, out var boundIndex))
+                    {
+                        stopIndex = boundIndex;
+                        endsInThisLeaf = true;
+                    }
+                }
+
+                while (entryIndex < stopIndex)
                 {
                     leafNode.GetAt(entryIndex, out var pageOffset, out var keyLength, out var valueLength);
 
-                    // check end key
-                    if (!endKey.IsEmpty)
-                    {
-                        var key = MemoryMarshal.CreateReadOnlySpan(
-                            ref Unsafe.Add(ref MemoryMarshal.GetReference(pageSpan), pageOffset),
-                            keyLength);
-                        var compared = KeyCompare.Compare(comparer, key, endKey);
-                        if (compared > 0 || (endKeyExclusive && compared == 0))
-                        {
-                            return result;
-                        }
-                    }
                     if (LeafNodeReader.IsOverflow(valueLength))
                     {
                         var resolved = ResolveValue(currentPage, pageOffset + keyLength, valueLength);
@@ -384,7 +387,7 @@ class TreeWalker
                 }
 
                 // next node
-                if (header.RightSiblingPageNumber.IsEmpty)
+                if (endsInThisLeaf || header.RightSiblingPageNumber.IsEmpty)
                 {
                     return result;
                 }
@@ -428,22 +431,24 @@ class TreeWalker
                 }
 
                 var leafNode = new LeafNodeReader(pageSpan, header.EntryCount);
-                while (entryIndex >= 0)
+
+                // Entries within a leaf are sorted: locate the start bound with one
+                // binary search instead of comparing every entry.
+                var boundIndex = 0;
+                if (!startKey.IsEmpty)
+                {
+                    var op = startKeyExclusive ? SearchOperator.UpperBound : SearchOperator.LowerBound;
+                    if (!leafNode.TrySearch(startKey, op, comparer, out boundIndex))
+                    {
+                        // Everything in (and left of) this leaf is below the start bound.
+                        return result;
+                    }
+                }
+
+                while (entryIndex >= boundIndex)
                 {
                     leafNode.GetAt(entryIndex, out var pageOffset, out var keyLength, out var valueLength);
 
-                    // check start key (lower bound for descending)
-                    if (!startKey.IsEmpty)
-                    {
-                        var key = MemoryMarshal.CreateReadOnlySpan(
-                            ref Unsafe.Add(ref MemoryMarshal.GetReference(pageSpan), pageOffset),
-                            keyLength);
-                        var compared = KeyCompare.Compare(comparer, key, startKey);
-                        if (compared < 0 || (startKeyExclusive && compared == 0))
-                        {
-                            return result;
-                        }
-                    }
                     if (LeafNodeReader.IsOverflow(valueLength))
                     {
                         var resolved = ResolveValue(currentPage, pageOffset + keyLength, valueLength);
@@ -458,7 +463,7 @@ class TreeWalker
                 }
 
                 // previous node (left sibling)
-                if (header.LeftSiblingPageNumber.IsEmpty)
+                if (boundIndex > 0 || header.LeftSiblingPageNumber.IsEmpty)
                 {
                     return result;
                 }
@@ -535,25 +540,28 @@ class TreeWalker
                     throw new InvalidOperationException("Invalid node kind");
                 }
 
-                while (entryIndex < header.EntryCount)
+                // Entries within a leaf are sorted: locate the end bound with one binary
+                // search instead of comparing every entry.
+                var stopIndex = header.EntryCount;
+                var endsInThisLeaf = false;
+                if (!endKey.IsEmpty)
+                {
+                    var op = endKeyExclusive ? SearchOperator.LowerBound : SearchOperator.UpperBound;
+                    if (new LeafNodeReader(currentPage.Memory.Span, header.EntryCount)
+                        .TrySearch(endKey.Span, op, comparer, out var boundIndex))
+                    {
+                        stopIndex = boundIndex;
+                        endsInThisLeaf = true;
+                    }
+                }
+
+                while (entryIndex < stopIndex)
                 {
                     int pageOffset;
                     ushort keyLength, valueLength;
                     new LeafNodeReader(currentPage.Memory.Span, header.EntryCount)
                         .GetAt(entryIndex, out pageOffset, out keyLength, out valueLength);
 
-                    // check end key
-                    if (!endKey.IsEmpty)
-                    {
-                        var compared = KeyCompare.Compare(
-                            comparer,
-                            currentPage.Memory.Span.Slice(pageOffset, keyLength),
-                            endKey.Span);
-                        if (compared > 0 || (endKeyExclusive && compared == 0))
-                        {
-                            return result;
-                        }
-                    }
                     if (LeafNodeReader.IsOverflow(valueLength))
                     {
                         var resolved = await ResolveValueAsync(currentPage, pageOffset + keyLength, valueLength, cancellationToken)
@@ -570,7 +578,7 @@ class TreeWalker
                 }
 
                 // next node
-                if (header.RightSiblingPageNumber.IsEmpty)
+                if (endsInThisLeaf || header.RightSiblingPageNumber.IsEmpty)
                 {
                     return result;
                 }
@@ -614,25 +622,27 @@ class TreeWalker
                     throw new InvalidOperationException("Invalid node kind");
                 }
 
-                while (entryIndex >= 0)
+                // Entries within a leaf are sorted: locate the start bound with one
+                // binary search instead of comparing every entry.
+                var boundIndex = 0;
+                if (!startKey.IsEmpty)
+                {
+                    var op = startKeyExclusive ? SearchOperator.UpperBound : SearchOperator.LowerBound;
+                    if (!new LeafNodeReader(currentPage.Memory.Span, header.EntryCount)
+                        .TrySearch(startKey.Span, op, comparer, out boundIndex))
+                    {
+                        // Everything in (and left of) this leaf is below the start bound.
+                        return result;
+                    }
+                }
+
+                while (entryIndex >= boundIndex)
                 {
                     int pageOffset;
                     ushort keyLength, valueLength;
                     new LeafNodeReader(currentPage.Memory.Span, header.EntryCount)
                         .GetAt(entryIndex, out pageOffset, out keyLength, out valueLength);
 
-                    // check start key (lower bound for descending)
-                    if (!startKey.IsEmpty)
-                    {
-                        var compared = KeyCompare.Compare(
-                            comparer,
-                            currentPage.Memory.Span.Slice(pageOffset, keyLength),
-                            startKey.Span);
-                        if (compared < 0 || (startKeyExclusive && compared == 0))
-                        {
-                            return result;
-                        }
-                    }
                     if (LeafNodeReader.IsOverflow(valueLength))
                     {
                         var resolved = await ResolveValueAsync(currentPage, pageOffset + keyLength, valueLength, cancellationToken)
@@ -649,7 +659,7 @@ class TreeWalker
                 }
 
                 // previous node (left sibling)
-                if (header.LeftSiblingPageNumber.IsEmpty)
+                if (boundIndex > 0 || header.LeftSiblingPageNumber.IsEmpty)
                 {
                     return result;
                 }
@@ -713,31 +723,19 @@ class TreeWalker
                     throw new InvalidOperationException("Invalid node kind");
                 }
 
-                var leafNode = new LeafNodeReader(pageSpan, header.EntryCount);
-                while (entryIndex < header.EntryCount)
+                // Entries within a leaf are sorted: locate the end bound with one binary
+                // search instead of comparing every entry.
+                if (!endKey.IsEmpty)
                 {
-                    leafNode.GetAt(
-                        entryIndex,
-                        out var pageOffset,
-                        out var keyLength,
-                        out _);
-
-                    // check end key
-                    if (!endKey.IsEmpty)
+                    var leafNode = new LeafNodeReader(pageSpan, header.EntryCount);
+                    var op = endKeyExclusive ? SearchOperator.LowerBound : SearchOperator.UpperBound;
+                    if (leafNode.TrySearch(endKey, op, comparer, out var boundIndex))
                     {
-                        var key = MemoryMarshal.CreateReadOnlySpan(
-                            ref Unsafe.Add(ref MemoryMarshal.GetReference(pageSpan), pageOffset),
-                            keyLength);
-                        var compared = KeyCompare.Compare(comparer, key, endKey);
-                        if (compared > 0 || (endKeyExclusive && compared == 0))
-                        {
-                            return count;
-                        }
+                        // The range ends inside this leaf.
+                        return count + Math.Max(0, boundIndex - entryIndex);
                     }
-
-                    count++;
-                    entryIndex++;
                 }
+                count += header.EntryCount - entryIndex;
 
                 // next node
                 if (header.RightSiblingPageNumber.IsEmpty)
@@ -808,31 +806,19 @@ class TreeWalker
                     throw new InvalidOperationException("Invalid node kind");
                 }
 
-                var leafNode = new LeafNodeReader(pageSpan, header.EntryCount);
-                while (entryIndex < header.EntryCount)
+                // Entries within a leaf are sorted: locate the end bound with one binary
+                // search instead of comparing every entry.
+                if (!endKey.IsEmpty)
                 {
-                    leafNode.GetAt(
-                        entryIndex,
-                        out var pageOffset,
-                        out var keyLength,
-                        out _);
-
-                    // check end key
-                    if (!endKey.IsEmpty)
+                    var leafNode = new LeafNodeReader(pageSpan, header.EntryCount);
+                    var op = endKeyExclusive ? SearchOperator.LowerBound : SearchOperator.UpperBound;
+                    if (leafNode.TrySearch(endKey.Span, op, comparer, out var boundIndex))
                     {
-                        var key = MemoryMarshal.CreateReadOnlySpan(
-                            ref Unsafe.Add(ref MemoryMarshal.GetReference(pageSpan), pageOffset),
-                            keyLength);
-                        var compared = KeyCompare.Compare(comparer, key, endKey.Span);
-                        if (compared > 0 || (endKeyExclusive && compared == 0))
-                        {
-                            return count;
-                        }
+                        // The range ends inside this leaf.
+                        return count + Math.Max(0, boundIndex - entryIndex);
                     }
-
-                    count++;
-                    entryIndex++;
                 }
+                count += header.EntryCount - entryIndex;
 
                 // next node
                 if (header.RightSiblingPageNumber.IsEmpty)
