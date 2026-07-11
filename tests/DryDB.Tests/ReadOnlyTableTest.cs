@@ -259,6 +259,40 @@ public class ReadOnlyTableTest
     }
 
     [Test]
+    public async Task CountRange_Repeated_DoesNotCorruptPageCache()
+    {
+        var table = await TestHelper.BuildTableAsync(
+            KeyEncoding.Ascii,
+            databaseConfigure: builder => builder.PageSize = 128,
+            tableConfigure: builder =>
+            {
+                for (var i = 0; i < 1000; i++)
+                {
+                    builder.Append(
+                        Encoding.ASCII.GetBytes($"key{i:D5}"),
+                        Encoding.ASCII.GetBytes($"value{i:D5}"));
+                }
+            });
+
+        // CountRange used to release the pages it walked one too many times, killing
+        // the cache entry for the last page of the range. Any later traversal through
+        // that page then spun forever in the TryGet/Load retry loop.
+        var completed = Task.Run(() =>
+        {
+            for (var i = 0; i < 3; i++)
+            {
+                var count = table.CountRange("key00100"u8, "key00900"u8);
+                Assert.That(count, Is.EqualTo(801));
+            }
+
+            using var result = table.Get("key00900"u8);
+            Assert.That(result.HasValue, Is.True);
+        }).Wait(TimeSpan.FromSeconds(10));
+
+        Assert.That(completed, Is.True, "CountRange corrupted the page cache (deadlock)");
+    }
+
+    [Test]
     public async Task GetRangeWithPrefix_Basic()
     {
         var table = await TestHelper.BuildTableAsync(
