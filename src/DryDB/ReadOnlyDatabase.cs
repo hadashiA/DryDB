@@ -72,6 +72,10 @@ public sealed class ReadOnlyDatabase : IDisposable
 
     public void Dispose()
     {
+        foreach (var table in tables.Values)
+        {
+            table.ReleasePinnedPages();
+        }
         pageCache.Dispose();
         pageLoader.Dispose();
     }

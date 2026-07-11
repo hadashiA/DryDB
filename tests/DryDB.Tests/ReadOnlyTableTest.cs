@@ -35,6 +35,61 @@ public class ReadOnlyTableTest
     }
 
     [Test]
+    public async Task Get_Concurrent_UnderEvictionPressure()
+    {
+        // 8-page cache against a table spanning dozens of pages, so that reads
+        // constantly race with eviction.
+        var table = await TestHelper.BuildTableAsync(
+            KeyEncoding.Ascii,
+            loadOptions: new DatabaseLoadOptions
+            {
+                CacheSize = 1024,
+            },
+            databaseConfigure: builder => builder.PageSize = 128,
+            tableConfigure: builder =>
+            {
+                for (var i = 0; i < 2000; i++)
+                {
+                    builder.Append(
+                        Encoding.ASCII.GetBytes($"key{i:D5}"),
+                        Encoding.ASCII.GetBytes($"value{i:D5}"));
+                }
+            });
+
+        var tasks = new List<Task>();
+        for (var t = 0; t < 4; t++)
+        {
+            var seed = t + 1;
+            tasks.Add(Task.Run(() =>
+            {
+                var random = new Random(seed);
+                for (var i = 0; i < 5000; i++)
+                {
+                    var k = random.Next(2000);
+                    using var result = table.Get(Encoding.ASCII.GetBytes($"key{k:D5}"));
+                    Assert.That(result.HasValue, Is.True);
+                    Assert.That(
+                        result.Value.Span.SequenceEqual(Encoding.ASCII.GetBytes($"value{k:D5}")),
+                        Is.True);
+                }
+            }));
+            tasks.Add(Task.Run(() =>
+            {
+                var random = new Random(seed * 100);
+                for (var i = 0; i < 200; i++)
+                {
+                    var start = random.Next(1900);
+                    using var result = table.GetRange(
+                        Encoding.ASCII.GetBytes($"key{start:D5}"),
+                        Encoding.ASCII.GetBytes($"key{start + 100:D5}"));
+                    Assert.That(result.Count, Is.EqualTo(101));
+                }
+            }));
+        }
+        await Task.WhenAll(tasks);
+    }
+
+    [Test]
     public async Task Get_TypedKey()
     {
         var table = await TestHelper.BuildTableAsync(

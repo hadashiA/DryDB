@@ -25,31 +25,10 @@ public class TreeWalkerTest
                 { "key9"u8.ToArray(), "value9"u8.ToArray() },
             }, 128);
 
-        await tree.PageCache.LoadAsync(tree.RootPageNumber);
+        Assert.That(tree.Search("key0"u8, SearchOperator.Equal, out _, out _), Is.False);
 
-        var result = tree.TrySearch(
-            "key3"u8.ToArray(),
-            SearchOperator.Equal,
-            out _,
-            out var index,
-            out var nextPageNumber);
-
-        Assert.That(result, Is.False);
-        Assert.That(nextPageNumber.HasValue, Is.True);
-
-        var pageNumber = nextPageNumber.Value;
-        await tree.PageCache.LoadAsync(pageNumber);
-
-        result = tree.TrySearch(
-            "key3"u8.ToArray(),
-            SearchOperator.Equal,
-            out _,
-            out index,
-            out nextPageNumber);
+        var result = tree.Search("key3"u8, SearchOperator.Equal, out var page, out var index);
         Assert.That(result, Is.True);
-        Assert.That(nextPageNumber.HasValue, Is.False);
-
-        Assert.That(tree.PageCache.TryGet(pageNumber, out var page), Is.True);
 
         var nodeHeader = NodeHeader.Parse(page.Memory.Span);
         var leafNode = new LeafNodeReader(page.Memory.Span, nodeHeader.EntryCount);
@@ -59,6 +38,8 @@ public class TreeWalkerTest
         var value = page.Memory.Span.Slice(pageOffset + keyLength, valueLength);
         Assert.That(key.SequenceEqual("key3"u8), Is.True);
         Assert.That(value.SequenceEqual("value3"u8), Is.True);
+
+        page.Release();
     }
 
     [Test]
@@ -85,34 +66,8 @@ public class TreeWalkerTest
                 { "key16"u8.ToArray(), "value16"u8.ToArray() },
             }, 128);
 
-        await tree.PageCache.LoadAsync(tree.RootPageNumber);
-
-        var result = tree.TrySearch(
-            "key03"u8.ToArray(),
-            SearchOperator.LowerBound,
-            out _,
-            out var pos,
-            out var nextPageNumber);
-
-        Assert.That(result, Is.False);
-        Assert.That(nextPageNumber.HasValue, Is.True);
-
-        await tree.PageCache.LoadAsync(nextPageNumber!.Value);
-
-        var pageNumber = nextPageNumber.Value;
-
-        result = tree.TrySearch(
-            pageNumber,
-            "key03"u8.ToArray(),
-            SearchOperator.LowerBound,
-            out _,
-            out pos,
-            out nextPageNumber);
-
+        var result = tree.Search("key03"u8, SearchOperator.LowerBound, out var page, out var pos);
         Assert.That(result, Is.True);
-        Assert.That(nextPageNumber.HasValue, Is.False);
-
-        Assert.That(tree.PageCache.TryGet(pageNumber, out var page), Is.True);
 
         var header = NodeHeader.Parse(page.Memory.Span);
         var leafNode = new LeafNodeReader(page.Memory.Span, header.EntryCount);
@@ -122,6 +77,8 @@ public class TreeWalkerTest
         var value = page.Memory.Span.Slice(pageOffset + keyLength, valueLength);
         Assert.That(key.SequenceEqual("key03"u8), Is.True);
         Assert.That(value.SequenceEqual("value03"u8), Is.True);
+
+        page.Release();
     }
 
     [Test]
@@ -148,34 +105,8 @@ public class TreeWalkerTest
                 { "key16"u8.ToArray(), "value16"u8.ToArray() },
             }, 128);
 
-        await tree.PageCache.LoadAsync(tree.RootPageNumber);
-
-        var result = tree.TrySearch(
-            "key03"u8.ToArray(),
-            SearchOperator.UpperBound,
-            out _,
-            out var pos,
-            out var nextPageNumber);
-
-        Assert.That(result, Is.False);
-        Assert.That(nextPageNumber.HasValue, Is.True);
-
-        await tree.PageCache.LoadAsync(nextPageNumber!.Value);
-
-        var pageNumber = nextPageNumber.Value;
-
-        result = tree.TrySearch(
-            pageNumber,
-            "key03"u8.ToArray(),
-            SearchOperator.UpperBound,
-            out _,
-            out pos,
-            out nextPageNumber);
-
+        var result = tree.Search("key03"u8, SearchOperator.UpperBound, out var page, out var pos);
         Assert.That(result, Is.True);
-        Assert.That(nextPageNumber.HasValue, Is.False);
-
-        Assert.That(tree.PageCache.TryGet(pageNumber, out var page), Is.True);
 
         var header = NodeHeader.Parse(page.Memory.Span);
         var leafNode = new LeafNodeReader(page.Memory.Span, header.EntryCount);

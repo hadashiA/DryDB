@@ -113,20 +113,9 @@ public class RangeIterator :
 
     public bool TrySeek(ReadOnlySpan<byte> key)
     {
-        PageNumber? nextPageNumber = treeWalker.RootPageNumber;
-        IPageEntry page;
-        int entryIndex;
-
-        while (!treeWalker.TrySearch(
-                   nextPageNumber.Value,
-                   key,
-                   SearchOperator.Equal,
-                   out page,
-                   out entryIndex,
-                   out nextPageNumber))
+        if (!treeWalker.Search(key, SearchOperator.Equal, out var page, out var entryIndex))
         {
-            if (!nextPageNumber.HasValue) return false;
-            treeWalker.PageCache.Load(nextPageNumber.Value);
+            return false;
         }
 
         currentOverflowPage?.Release();
@@ -139,7 +128,7 @@ public class RangeIterator :
         }
         else
         {
-            // TrySearch acquired another reference to the page we already hold
+            // Search acquired another reference to the page we already hold
             page.Release();
         }
         currentEntryIndex = entryIndex;
@@ -150,20 +139,11 @@ public class RangeIterator :
         ReadOnlyMemory<byte> key,
         CancellationToken cancellationToken = default)
     {
-        PageNumber? nextPageNumber = treeWalker.RootPageNumber;
-        IPageEntry page;
-        int entryIndex;
-
-        while (!treeWalker.TrySearch(
-                   nextPageNumber.Value,
-                   key.Span,
-                   SearchOperator.Equal,
-                   out page,
-                   out entryIndex,
-                   out nextPageNumber))
+        var (page, entryIndex) = await treeWalker.SearchAsync(key, SearchOperator.Equal, cancellationToken)
+            .ConfigureAwait(false);
+        if (page == null)
         {
-            if (!nextPageNumber.HasValue) return false;
-            await treeWalker.PageCache.LoadAsync(nextPageNumber.Value, cancellationToken);
+            return false;
         }
 
         currentOverflowPage?.Release();
@@ -176,7 +156,7 @@ public class RangeIterator :
         }
         else
         {
-            // TrySearch acquired another reference to the page we already hold
+            // Search acquired another reference to the page we already hold
             page.Release();
         }
         currentEntryIndex = entryIndex;
@@ -217,10 +197,7 @@ public class RangeIterator :
             }
 
             currentPage.Release();
-            while (!pageCache.TryGet(header.RightSiblingPageNumber, out currentPage))
-            {
-                treeWalker.PageCache.Load(header.RightSiblingPageNumber);
-            }
+            currentPage = pageCache.GetOrLoad(header.RightSiblingPageNumber);
 
             header = currentPage.GetNodeHeader();
             if (header.Kind != NodeKind.Leaf)
@@ -269,10 +246,7 @@ public class RangeIterator :
             }
 
             currentPage.Release();
-            while (!pageCache.TryGet(header.LeftSiblingPageNumber, out currentPage))
-            {
-                treeWalker.PageCache.Load(header.LeftSiblingPageNumber);
-            }
+            currentPage = pageCache.GetOrLoad(header.LeftSiblingPageNumber);
 
             var leftHeader = currentPage.GetNodeHeader();
             if (leftHeader.Kind != NodeKind.Leaf)
@@ -328,10 +302,7 @@ public class RangeIterator :
             }
 
             currentPage.Release();
-            while (!pageCache.TryGet(header.RightSiblingPageNumber, out currentPage))
-            {
-                await treeWalker.PageCache.LoadAsync(header.RightSiblingPageNumber);
-            }
+            currentPage = await pageCache.GetOrLoadAsync(header.RightSiblingPageNumber).ConfigureAwait(false);
 
             header = currentPage.GetNodeHeader();
             if (header.Kind != NodeKind.Leaf)
@@ -380,10 +351,7 @@ public class RangeIterator :
             }
 
             currentPage.Release();
-            while (!pageCache.TryGet(header.LeftSiblingPageNumber, out currentPage))
-            {
-                await treeWalker.PageCache.LoadAsync(header.LeftSiblingPageNumber);
-            }
+            currentPage = await pageCache.GetOrLoadAsync(header.LeftSiblingPageNumber).ConfigureAwait(false);
 
             var leftHeader = currentPage.GetNodeHeader();
             if (leftHeader.Kind != NodeKind.Leaf)

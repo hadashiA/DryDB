@@ -2,6 +2,7 @@ using System;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -30,15 +31,28 @@ public sealed class PageCache : IDisposable
                 buffer = value;
                 // cache the Memory to avoid the virtual IMemoryOwner<byte>.Memory call per access
                 memory = value?.Memory ?? default;
+                // Array-backed buffers are reclaimed by the GC once nothing references
+                // the entry, so they need no reference counting at all — reads become
+                // interlocked-free. Buffers over unmanaged memory (e.g. Unity's
+                // NativeArray loader) must be disposed deterministically and keep the
+                // refcount protocol.
+                requiresDispose = value != null && !MemoryMarshal.TryGetArray(memory, out _);
             }
         }
         public QueueTag Tag { get; set; }
+
+        public bool RequiresDispose
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => requiresDispose;
+        }
 
         public int RefCount;
         public int Frequency;
 
         IMemoryOwner<byte>? buffer;
         readonly ReadOnlyMemory<byte> memory;
+        readonly bool requiresDispose;
 
         public ReadOnlyMemory<byte> Memory
         {
@@ -49,12 +63,14 @@ public sealed class PageCache : IDisposable
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Retain()
         {
+            if (!requiresDispose) return;
             Interlocked.Increment(ref RefCount);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool TryRetainIfAlive()
         {
+            if (!requiresDispose) return true;
             while (true)
             {
                 var current = Volatile.Read(ref RefCount);
@@ -72,6 +88,7 @@ public sealed class PageCache : IDisposable
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Release()
         {
+            if (!requiresDispose) return;
             if (Interlocked.Decrement(ref RefCount) == 0)
             {
                 Buffer?.Dispose();
@@ -111,9 +128,11 @@ public sealed class PageCache : IDisposable
         sTargetSize = Math.Max(2, (int)(capacity * smallFraction));
         mTargetSize = capacity - sTargetSize;
 
+        // The dictionary grows on demand; preallocating buckets for the full capacity
+        // (up to ~512k pages with the default CacheSize) wastes megabytes at open.
         map = new ConcurrentDictionary<PageNumber, Entry>(
             Environment.ProcessorCount,
-            capacity);
+            Math.Min(capacity, 4096));
 
         ghost = new ConcurrentDictionary<PageNumber, byte>(
             Environment.ProcessorCount,
@@ -151,8 +170,12 @@ public sealed class PageCache : IDisposable
             }
 
             // freq++（max: 3）
-            // Frequency is an approximate heuristic for S3-FIFO; a lost increment under
-            // contention is acceptable, so a single CAS attempt is enough (no retry loop).
+            // Frequency is an approximate heuristic for S3-FIFO, so a single CAS attempt
+            // is enough (no retry loop). The CAS must not be relaxed to a plain write:
+            // a stale overwrite would cancel the evictor's second-chance decrement and
+            // hot entries could never expire, livelocking the evict loop. With the CAS
+            // the reader's bump simply loses when it races the evictor. Once saturated
+            // at 3, readers stop writing the line entirely.
             var frequency = entry.Frequency;
             if (frequency < 3)
             {
@@ -165,20 +188,65 @@ public sealed class PageCache : IDisposable
         return false;
     }
 
+    /// <summary>
+    /// Get the page from the cache, loading it if necessary. The returned entry always
+    /// carries a reference owned by the caller (release it when done), so it stays valid
+    /// even if the page is evicted immediately after — which makes reads safe under
+    /// cache thrash. (The old load-then-relookup protocol could livelock: concurrent
+    /// loaders kept evicting each other's pages before they could be looked up again.)
+    /// </summary>
+    public IPageEntry GetOrLoad(PageNumber pageNumber)
+    {
+        while (true)
+        {
+            if (TryGet(pageNumber, out var page))
+            {
+                return page;
+            }
+
+            var buffer = pageLoader.ReadPage(pageNumber, filters);
+            if (TryPublish(pageNumber, buffer, out page))
+            {
+                return page;
+            }
+
+            // Lost the publish race: another thread's entry is in the map. Our buffer
+            // was never published, so it can be disposed directly.
+            buffer.Dispose();
+        }
+    }
+
+    /// <inheritdoc cref="GetOrLoad"/>
+    public async ValueTask<IPageEntry> GetOrLoadAsync(PageNumber pageNumber, CancellationToken cancellationToken = default)
+    {
+        while (true)
+        {
+            if (TryGet(pageNumber, out var page))
+            {
+                return page;
+            }
+
+            var buffer = await pageLoader.ReadPageAsync(pageNumber, filters, cancellationToken).ConfigureAwait(false);
+            if (TryPublish(pageNumber, buffer, out page))
+            {
+                return page;
+            }
+
+            buffer.Dispose();
+        }
+    }
+
     public void Load(PageNumber pageNumber)
     {
-        var buffer = pageLoader.ReadPage(pageNumber, filters);
-        AddEntry(pageNumber, buffer);
+        GetOrLoad(pageNumber).Release();
     }
 
     public async ValueTask LoadAsync(PageNumber pageNumber, CancellationToken cancellationToken = default)
     {
-        var buffer = await pageLoader.ReadPageAsync(pageNumber, filters, cancellationToken);
-        AddEntry(pageNumber, buffer);
+        (await GetOrLoadAsync(pageNumber, cancellationToken).ConfigureAwait(false)).Release();
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    void AddEntry(PageNumber pageNumber, IMemoryOwner<byte> buffer)
+    bool TryPublish(PageNumber pageNumber, IMemoryOwner<byte> buffer, out IPageEntry page)
     {
         var entry = new Entry
         {
@@ -186,13 +254,14 @@ public sealed class PageCache : IDisposable
             Buffer = buffer,
             Frequency = 1,
             Tag = QueueTag.None,
-            RefCount = 1
+            // One reference for the map, one handed to the caller.
+            RefCount = 2
         };
 
         if (!map.TryAdd(pageNumber, entry))
         {
-            // race
-            return;
+            page = null!;
+            return false;
         }
 
         var inGhost = ghost.ContainsKey(pageNumber);
@@ -221,6 +290,9 @@ public sealed class PageCache : IDisposable
         {
             TryStartEvict();
         }
+
+        page = entry;
+        return true;
     }
 
     void TryStartEvict()
@@ -231,9 +303,16 @@ public sealed class PageCache : IDisposable
 
         try
         {
-            while (map.Count > capacity)
+            // Bounded pass: second-chance re-insertions count as progress, so under
+            // heavy concurrent access a single pass could otherwise spin while readers
+            // keep refreshing frequencies. Leaving the map temporarily over capacity is
+            // fine — the next Load retries the eviction.
+            var attempts = capacity * 4;
+            while (map.Count > capacity && attempts-- > 0)
             {
-                EvictOne();
+                // Stop when neither queue can make progress (e.g. entries raced out of
+                // the queues); otherwise this would spin forever.
+                if (!EvictOne()) break;
             }
         }
         finally
@@ -242,23 +321,14 @@ public sealed class PageCache : IDisposable
         }
     }
 
-    void EvictOne()
+    bool EvictOne()
     {
         // If the approximate size of S is greater than the target, prioritize S; otherwise, prioritize M.
         if (Volatile.Read(ref approxSSize) >= sTargetSize)
         {
-            if (!EvictFromS())
-            {
-                EvictFromM();
-            }
+            return EvictFromS() || EvictFromM();
         }
-        else
-        {
-            if (!EvictFromM())
-            {
-                EvictFromS();
-            }
-        }
+        return EvictFromM() || EvictFromS();
     }
 
     bool EvictFromS()
