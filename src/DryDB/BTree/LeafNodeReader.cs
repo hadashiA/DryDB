@@ -72,39 +72,14 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount)
         out int valueOffset,
         out ushort valueLength)
     {
-#if NETSTANDARD
-        ref var pageReference = ref MemoryMarshal.GetReference(page);
-#endif
-        var min = 0;
-        var max = entryCount;
-
-        while (min < max)
+        if (TrySearch(key, SearchOperator.Equal, keyEncoding, out index))
         {
-            var midIndex = min + ((max - min) >> 1);
-            var midMeta = GetMeta(midIndex);
-
-            ref var ptr = ref Unsafe.Add(ref pageReference, midMeta.PageOffset);
-            var midKey = MemoryMarshal.CreateReadOnlySpan(ref ptr, midMeta.KeyLength);
-
-            var compared = KeyCompare.Compare(keyEncoding, midKey, key);
-            if (compared == 0)
-            {
-                index = midIndex;
-                valueOffset = midMeta.PageOffset + midMeta.KeyLength;
-                valueLength = midMeta.ValueLength;
-                return true;
-            }
-            if (compared < 0)
-            {
-                min = midIndex + 1;
-            }
-            else
-            {
-                max = midIndex;
-            }
+            var meta = GetMeta(index);
+            valueOffset = meta.PageOffset + meta.KeyLength;
+            valueLength = meta.ValueLength;
+            return true;
         }
 
-        index = default;
         valueOffset = default;
         valueLength = default;
         return false;
@@ -119,102 +94,66 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount)
 #if  NETSTANDARD
         ref var pageReference = ref MemoryMarshal.GetReference(page);
 #endif
-
-        var min = 0;
-        var max = entryCount;
-        var resultIndex = -1;
-
-        while (min < max)
-        {
-            var midIndex = min + ((max - min) >> 1);
-            var midMeta = GetMeta(midIndex);
-
-            ref var ptr = ref Unsafe.Add(ref pageReference, midMeta.PageOffset);
-            var midKey = MemoryMarshal.CreateReadOnlySpan(ref ptr, midMeta.KeyLength);
-
-            var compared = KeyCompare.Compare(keyEncoding, midKey, key);
-            switch (op)
-            {
-                case SearchOperator.Equal:
-                    if (compared == 0)
-                    {
-                        index = midIndex;
-                        return true;
-                    }
-                    if (compared < 0)
-                    {
-                        min = midIndex + 1;
-                        resultIndex = min;
-                    }
-                    else
-                    {
-                        max = midIndex;
-                    }
-                    break;
-                case SearchOperator.LowerBound:
-                    if (compared < 0)
-                    {
-                        min = midIndex + 1;
-                    }
-                    else
-                    {
-                        max = midIndex;
-                        resultIndex = midIndex;
-                    }
-                    break;
-                case SearchOperator.UpperBound:
-                    if (compared <= 0)
-                    {
-                        min = midIndex + 1;
-                    }
-                    else
-                    {
-                        max = midIndex;
-                        resultIndex = max;
-                    }
-                    break;
-                default:
-                    throw new ArgumentOutOfRangeException(nameof(op), op, null);
-            }
-        }
-
-        if (resultIndex < 0)
+        if (entryCount <= 0)
         {
             index = default;
             return false;
         }
 
-        switch (op)
+        // Branchless bound search: `first += cond ? half : 0` compiles to a conditional
+        // select, so a random key doesn't pay a branch misprediction per probe.
+        // The probe moves right while probeKey < key (LowerBound/Equal, boundary -1)
+        // or probeKey <= key (UpperBound, boundary 0).
+        var boundary = op == SearchOperator.UpperBound ? 0 : -1;
+
+        var first = 0;
+        var length = entryCount;
+        while (length > 1)
         {
-            case SearchOperator.Equal:
-                if (min < max)
-                {
-                    var meta = GetMeta(min);
-                    ref var ptr = ref Unsafe.Add(ref pageReference, meta.PageOffset);
-                    var foundKey = MemoryMarshal.CreateReadOnlySpan(ref ptr, meta.KeyLength);
-                    if (KeyCompare.Compare(keyEncoding, foundKey, key) == 0)
-                    {
-                        index = min;
-                        return true;
-                    }
-                }
-                index = default;
-                return false;
+            var half = length >> 1;
+            var meta = GetMeta(first + half - 1);
+            var probeKey = MemoryMarshal.CreateReadOnlySpan(
+                ref Unsafe.Add(ref pageReference, meta.PageOffset),
+                meta.KeyLength);
 
-            case SearchOperator.LowerBound:
-                // >= key
-                index = min;
-                return true;
-
-            case SearchOperator.UpperBound:
-                // > key
-                index = min;
-                return true;
-
-            default:
-                index = default;
-                return false;
+            var compared = KeyCompare.Compare(keyEncoding, probeKey, key);
+            first += compared <= boundary ? half : 0;
+            length -= half;
         }
+
+        var lastMeta = GetMeta(first);
+        var lastKey = MemoryMarshal.CreateReadOnlySpan(
+            ref Unsafe.Add(ref pageReference, lastMeta.PageOffset),
+            lastMeta.KeyLength);
+        var lastCompared = KeyCompare.Compare(keyEncoding, lastKey, key);
+
+        if (op == SearchOperator.Equal)
+        {
+            if (lastCompared == 0)
+            {
+                index = first;
+                return true;
+            }
+            if (lastCompared < 0 && first + 1 < entryCount)
+            {
+                // The bound landed one before the candidate; check it.
+                var nextMeta = GetMeta(first + 1);
+                var nextKey = MemoryMarshal.CreateReadOnlySpan(
+                    ref Unsafe.Add(ref pageReference, nextMeta.PageOffset),
+                    nextMeta.KeyLength);
+                if (KeyCompare.Compare(keyEncoding, nextKey, key) == 0)
+                {
+                    index = first + 1;
+                    return true;
+                }
+            }
+            index = default;
+            return false;
+        }
+
+        first += lastCompared <= boundary ? 1 : 0;
+        index = first;
+        return first < entryCount;
     }
 
     // for debug purpose

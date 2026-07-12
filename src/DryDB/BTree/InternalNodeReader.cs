@@ -50,35 +50,37 @@ readonly ref struct InternalNodeReader(ReadOnlySpan<byte> page, int entryCount)
 #if NETSTANDARD
         ref var pageReference = ref MemoryMarshal.GetReference(page);
 #endif
-        var min = 0;
-        var max = entryCount;
-
-        NodeEntryMeta meta;
-        while (min < max)
+        // Branchless upper-bound search (see LeafNodeReader.TrySearch): the probe moves
+        // right while probeKey <= key, and `first += cond ? half : 0` compiles to a
+        // conditional select instead of an unpredictable branch.
+        var first = 0;
+        var length = entryCount;
+        while (length > 1)
         {
-            var mid = min + ((max - min) >> 1);
+            var half = length >> 1;
+            var meta = GetMeta(first + half - 1);
+            var probeKey = MemoryMarshal.CreateReadOnlySpan(
+                ref Unsafe.Add(ref pageReference, meta.PageOffset),
+                meta.KeyLength);
 
-            meta = GetMeta(mid);
-            ref var ptr = ref Unsafe.Add(ref pageReference, meta.PageOffset);
-
-            var midKey = MemoryMarshal.CreateReadOnlySpan(ref ptr, meta.KeyLength);
-            var cmp = KeyCompare.Compare(keyEncoding, midKey, key);
-            if (cmp <= 0) // upper bounds
-            {
-                min = mid + 1;
-            }
-            else
-            {
-                max = mid;
-            }
+            var compared = KeyCompare.Compare(keyEncoding, probeKey, key);
+            first += compared <= 0 ? half : 0;
+            length -= half;
         }
 
-        var index = min == 0 ? 0 : min - 1;
-        meta = GetMeta(index);
+        var lastMeta = GetMeta(first);
+        var lastKey = MemoryMarshal.CreateReadOnlySpan(
+            ref Unsafe.Add(ref pageReference, lastMeta.PageOffset),
+            lastMeta.KeyLength);
+        first += KeyCompare.Compare(keyEncoding, lastKey, key) <= 0 ? 1 : 0;
+
+        // The child to descend into is the entry before the upper bound.
+        var index = first == 0 ? 0 : first - 1;
+        var childMeta = GetMeta(index);
         childPageNumber = Unsafe.ReadUnaligned<PageNumber>(
             ref Unsafe.Add(
                 ref pageReference,
-                meta.PageOffset + meta.KeyLength));
+                childMeta.PageOffset + childMeta.KeyLength));
         return true;
     }
 
