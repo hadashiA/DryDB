@@ -97,38 +97,67 @@ public sealed class ReadOnlyTable : IKeyValueStore
         primaryKeyTree.GetAsync(key, cancellationToken);
 
     // optimization for long
-    public async ValueTask<SingleValueResult> GetAsync(long key, CancellationToken cancellationToken = default)
+    public ValueTask<SingleValueResult> GetAsync(long key, CancellationToken cancellationToken = default)
     {
-        var buffer = ArrayPool<byte>.Shared.Rent(sizeof(long));
-        BinaryPrimitives.WriteInt64LittleEndian(buffer, key);
-        try
+        // Cache-hit fast path: encode on the stack and complete synchronously, without
+        // renting a buffer or entering the async state machine.
+        Span<byte> keyBuffer = stackalloc byte[sizeof(long)];
+        BinaryPrimitives.WriteInt64LittleEndian(keyBuffer, key);
+        if (primaryKeyTree.TryGetFromCache(keyBuffer, out var result))
         {
-            return await primaryKeyTree.GetAsync(buffer.AsMemory(0, sizeof(long)), cancellationToken);
+            return new ValueTask<SingleValueResult>(result);
         }
-        finally
+        return GetSlowAsync(key, cancellationToken);
+
+        async ValueTask<SingleValueResult> GetSlowAsync(long k, CancellationToken ct)
         {
-            ArrayPool<byte>.Shared.Return(buffer);
+            var buffer = ArrayPool<byte>.Shared.Rent(sizeof(long));
+            BinaryPrimitives.WriteInt64LittleEndian(buffer, k);
+            try
+            {
+                return await primaryKeyTree.GetAsync(buffer.AsMemory(0, sizeof(long)), ct);
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
         }
     }
 
-    public async ValueTask<SingleValueResult> GetAsync<TKey>(TKey key, CancellationToken cancellationToken = default)
+    public ValueTask<SingleValueResult> GetAsync<TKey>(TKey key, CancellationToken cancellationToken = default)
         where TKey : IComparable<TKey>
     {
-        var initialBufferSize = KeyEncoding.GetMaxEncodedByteCount(key);
-        var buffer = ArrayPool<byte>.Shared.Rent(initialBufferSize);
-        int bytesWritten;
-        while (!KeyEncoding.TryEncode(key, buffer, out bytesWritten))
+        // Cache-hit fast path: encode on the stack and complete synchronously.
+        var bufferLength = KeyEncoding.GetMaxEncodedByteCount(key);
+        if (bufferLength <= 256)
         {
-            ArrayPool<byte>.Shared.Return(buffer);
-            buffer = ArrayPool<byte>.Shared.Rent(buffer.Length * 2);
+            Span<byte> keyBuffer = stackalloc byte[bufferLength];
+            if (KeyEncoding.TryEncode(key, keyBuffer, out var bytesWritten) &&
+                primaryKeyTree.TryGetFromCache(keyBuffer[..bytesWritten], out var result))
+            {
+                return new ValueTask<SingleValueResult>(result);
+            }
         }
-        try
+        return GetSlowAsync(key, cancellationToken);
+
+        async ValueTask<SingleValueResult> GetSlowAsync(TKey k, CancellationToken ct)
         {
-            return await primaryKeyTree.GetAsync(buffer.AsMemory(0, bytesWritten), cancellationToken);
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(buffer);
+            var initialBufferSize = KeyEncoding.GetMaxEncodedByteCount(k);
+            var buffer = ArrayPool<byte>.Shared.Rent(initialBufferSize);
+            int bytesWritten;
+            while (!KeyEncoding.TryEncode(k, buffer, out bytesWritten))
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+                buffer = ArrayPool<byte>.Shared.Rent(buffer.Length * 2);
+            }
+            try
+            {
+                return await primaryKeyTree.GetAsync(buffer.AsMemory(0, bytesWritten), ct);
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
         }
     }
 

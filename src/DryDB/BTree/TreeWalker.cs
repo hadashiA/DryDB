@@ -224,7 +224,7 @@ class TreeWalker
     /// Attempt the whole lookup against cached pages only. Returns false when any page
     /// on the path (including an overflow page) is not cached and IO would be required.
     /// </summary>
-    bool TryGetFromCache(scoped ReadOnlySpan<byte> key, out SingleValueResult result)
+    internal bool TryGetFromCache(scoped ReadOnlySpan<byte> key, out SingleValueResult result)
     {
         var pageNumber = RootPageNumber;
         while (true)
