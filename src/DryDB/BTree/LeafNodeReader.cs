@@ -12,7 +12,7 @@ namespace DryDB.BTree;
 /// </summary>>
 /// <remarks>
 /// </remarks>
-readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount)
+readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool hasKeyDigests)
 {
     internal const ushort OverflowSentinel = ushort.MaxValue; // 0xFFFF
 
@@ -32,11 +32,15 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount)
         public ushort ValueLength;
     }
 
+    static readonly int DigestBase = Unsafe.SizeOf<PageHeader>() + Unsafe.SizeOf<NodeHeader>();
+
 #if NETSTANDARD
     readonly ReadOnlySpan<byte> page = page;
 #else
     readonly ref byte pageReference = ref MemoryMarshal.GetReference(page);
 #endif
+    readonly int metaBase = DigestBase + (hasKeyDigests ? entryCount * sizeof(ulong) : 0);
+    readonly bool hasKeyDigests = hasKeyDigests;
 
     public void GetAt(int index, out ReadOnlySpan<byte> key, out ReadOnlySpan<byte> value)
     {
@@ -68,6 +72,8 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount)
     public bool TryFindValue(
         scoped ReadOnlySpan<byte> key,
         IKeyEncoding keyEncoding,
+        ulong keyDigest,
+        bool hasKeyDigest,
         out int index,
         out int valueOffset,
         out ushort valueLength)
@@ -75,20 +81,34 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount)
 #if NETSTANDARD
         ref var pageReference = ref MemoryMarshal.GetReference(page);
 #endif
+        var useDigest = hasKeyDigests && hasKeyDigest;
+
         var min = 0;
         var max = entryCount;
 
         while (min < max)
         {
             var midIndex = min + ((max - min) >> 1);
-            var midMeta = GetMeta(midIndex);
 
-            ref var ptr = ref Unsafe.Add(ref pageReference, midMeta.PageOffset);
-            var midKey = MemoryMarshal.CreateReadOnlySpan(ref ptr, midMeta.KeyLength);
+            int compared;
+            if (useDigest)
+            {
+                // One contiguous load instead of dereferencing the variable-length key;
+                // only digest ties fall back to the full comparison.
+                var digest = Unsafe.ReadUnaligned<ulong>(
+                    ref Unsafe.Add(ref pageReference, DigestBase + midIndex * sizeof(ulong)));
+                compared = digest != keyDigest
+                    ? (digest < keyDigest ? -1 : 1)
+                    : CompareFull(ref pageReference, midIndex, key, keyEncoding);
+            }
+            else
+            {
+                compared = CompareFull(ref pageReference, midIndex, key, keyEncoding);
+            }
 
-            var compared = KeyCompare.Compare(keyEncoding, midKey, key);
             if (compared == 0)
             {
+                var midMeta = GetMeta(midIndex);
                 index = midIndex;
                 valueOffset = midMeta.PageOffset + midMeta.KeyLength;
                 valueLength = midMeta.ValueLength;
@@ -114,11 +134,14 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount)
         ReadOnlySpan<byte> key,
         SearchOperator op,
         IKeyEncoding keyEncoding,
+        ulong keyDigest,
+        bool hasKeyDigest,
         out int index)
     {
 #if  NETSTANDARD
         ref var pageReference = ref MemoryMarshal.GetReference(page);
 #endif
+        var useDigest = hasKeyDigests && hasKeyDigest;
 
         var min = 0;
         var max = entryCount;
@@ -127,12 +150,21 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount)
         while (min < max)
         {
             var midIndex = min + ((max - min) >> 1);
-            var midMeta = GetMeta(midIndex);
 
-            ref var ptr = ref Unsafe.Add(ref pageReference, midMeta.PageOffset);
-            var midKey = MemoryMarshal.CreateReadOnlySpan(ref ptr, midMeta.KeyLength);
+            int compared;
+            if (useDigest)
+            {
+                var digest = Unsafe.ReadUnaligned<ulong>(
+                    ref Unsafe.Add(ref pageReference, DigestBase + midIndex * sizeof(ulong)));
+                compared = digest != keyDigest
+                    ? (digest < keyDigest ? -1 : 1)
+                    : CompareFull(ref pageReference, midIndex, key, keyEncoding);
+            }
+            else
+            {
+                compared = CompareFull(ref pageReference, midIndex, key, keyEncoding);
+            }
 
-            var compared = KeyCompare.Compare(keyEncoding, midKey, key);
             switch (op)
             {
                 case SearchOperator.Equal:
@@ -189,10 +221,7 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount)
             case SearchOperator.Equal:
                 if (min < max)
                 {
-                    var meta = GetMeta(min);
-                    ref var ptr = ref Unsafe.Add(ref pageReference, meta.PageOffset);
-                    var foundKey = MemoryMarshal.CreateReadOnlySpan(ref ptr, meta.KeyLength);
-                    if (KeyCompare.Compare(keyEncoding, foundKey, key) == 0)
+                    if (CompareFull(ref pageReference, min, key, keyEncoding) == 0)
                     {
                         index = min;
                         return true;
@@ -215,6 +244,16 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount)
                 index = default;
                 return false;
         }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    int CompareFull(ref byte pageReference, int index, ReadOnlySpan<byte> key, IKeyEncoding keyEncoding)
+    {
+        var meta = GetMeta(index);
+        var entryKey = MemoryMarshal.CreateReadOnlySpan(
+            ref Unsafe.Add(ref pageReference, meta.PageOffset),
+            meta.KeyLength);
+        return KeyCompare.Compare(keyEncoding, entryKey, key);
     }
 
     // for debug purpose
@@ -261,8 +300,7 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount)
 #endif
         ref var ptr = ref Unsafe.Add(
             ref pageReference,
-            Unsafe.SizeOf<PageHeader>() + Unsafe.SizeOf<NodeHeader>() +
-            index * Unsafe.SizeOf<NodeEntryMeta>());
+            metaBase + index * Unsafe.SizeOf<NodeEntryMeta>());
         return Unsafe.ReadUnaligned<NodeEntryMeta>(ref ptr);
     }
 }

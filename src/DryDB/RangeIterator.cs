@@ -26,12 +26,12 @@ public class RangeIterator :
         get
         {
             var header = NodeHeader.Parse(currentPage!.Memory.Span);
-            if (header.Kind != NodeKind.Leaf)
+            if (header.NodeKind != NodeKind.Leaf)
             {
                 throw new InvalidOperationException("Invalid node kind");
             }
 
-            var reader = new LeafNodeReader(currentPage.Memory.Span, header.EntryCount);
+            var reader = new LeafNodeReader(currentPage.Memory.Span, header.EntryCount, header.HasKeyDigests);
             reader.GetAt(currentEntryIndex, out var pageOffset, out var keyLength, out _);
             return currentPage.Memory.Slice(pageOffset, keyLength);
         }
@@ -45,11 +45,11 @@ public class RangeIterator :
             currentOverflowPage = null;
 
             var header = NodeHeader.Parse(currentPage!.Memory.Span);
-            if (header.Kind != NodeKind.Leaf)
+            if (header.NodeKind != NodeKind.Leaf)
             {
                 throw new InvalidOperationException("Invalid node kind");
             }
-            var reader = new LeafNodeReader(currentPage.Memory.Span, header.EntryCount);
+            var reader = new LeafNodeReader(currentPage.Memory.Span, header.EntryCount, header.HasKeyDigests);
             reader.GetAt(currentEntryIndex, out var pageOffset, out var keyLength, out var valueLength);
 
             if (LeafNodeReader.IsOverflow(valueLength))
@@ -200,7 +200,7 @@ public class RangeIterator :
             currentPage = pageCache.GetOrLoad(header.RightSiblingPageNumber);
 
             header = currentPage.GetNodeHeader();
-            if (header.Kind != NodeKind.Leaf)
+            if (header.NodeKind != NodeKind.Leaf)
             {
                 throw new InvalidOperationException("Invalid node kind");
             }
@@ -249,7 +249,7 @@ public class RangeIterator :
             currentPage = pageCache.GetOrLoad(header.LeftSiblingPageNumber);
 
             var leftHeader = currentPage.GetNodeHeader();
-            if (leftHeader.Kind != NodeKind.Leaf)
+            if (leftHeader.NodeKind != NodeKind.Leaf)
             {
                 throw new InvalidOperationException("Invalid node kind");
             }
@@ -305,7 +305,7 @@ public class RangeIterator :
             currentPage = await pageCache.GetOrLoadAsync(header.RightSiblingPageNumber).ConfigureAwait(false);
 
             header = currentPage.GetNodeHeader();
-            if (header.Kind != NodeKind.Leaf)
+            if (header.NodeKind != NodeKind.Leaf)
             {
                 throw new InvalidOperationException("Invalid node kind");
             }
@@ -354,7 +354,7 @@ public class RangeIterator :
             currentPage = await pageCache.GetOrLoadAsync(header.LeftSiblingPageNumber).ConfigureAwait(false);
 
             var leftHeader = currentPage.GetNodeHeader();
-            if (leftHeader.Kind != NodeKind.Leaf)
+            if (leftHeader.NodeKind != NodeKind.Leaf)
             {
                 throw new InvalidOperationException("Invalid node kind");
             }

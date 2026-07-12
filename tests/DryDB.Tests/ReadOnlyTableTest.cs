@@ -90,6 +90,39 @@ public class ReadOnlyTableTest
     }
 
     [Test]
+    public async Task Get_KeysSharingDigestPrefix()
+    {
+        // All keys share their first 8 bytes, so every key digest collides and the
+        // search must fall back to full key comparisons.
+        var table = await TestHelper.BuildTableAsync(
+            KeyEncoding.Ascii,
+            databaseConfigure: builder => builder.PageSize = 256,
+            tableConfigure: builder =>
+            {
+                for (var i = 0; i < 300; i++)
+                {
+                    builder.Append(
+                        Encoding.ASCII.GetBytes($"commonprefix{i:D5}"),
+                        Encoding.ASCII.GetBytes($"value{i:D5}"));
+                }
+            });
+
+        using var result1 = table.Get("commonprefix00123"u8);
+        Assert.That(result1.HasValue, Is.True);
+        Assert.That(result1.Value.Span.SequenceEqual("value00123"u8), Is.True);
+
+        using var result2 = table.Get("commonprefix99999"u8);
+        Assert.That(result2.HasValue, Is.False);
+
+        using var rangeResult = table.GetRange("commonprefix00100"u8, "commonprefix00110"u8);
+        Assert.That(rangeResult.Count, Is.EqualTo(11));
+
+        Assert.That(
+            table.CountRange("commonprefix00100"u8, "commonprefix00199"u8),
+            Is.EqualTo(100));
+    }
+
+    [Test]
     public async Task Get_TypedKey()
     {
         var table = await TestHelper.BuildTableAsync(

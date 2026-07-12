@@ -174,7 +174,9 @@ public class DatabaseBuilder : IDisposable
             Header.MagicBytesValue.CopyTo(new Span<byte>(header.MagicBytes, Header.MagicBytesValue.Length));
         }
         header.MajorVersion = 1;
-        header.MinorVersion = 0;
+        // 1.1: B+Tree nodes may carry per-entry key digest arrays (flagged per page in
+        // the node header's kind field). 1.0 readers cannot parse such pages.
+        header.MinorVersion = 1;
         header.PageFilterCount = (ushort)(filterOptions?.Filters.Count ?? 0);
         header.PageSize = PageSize;
         header.TableCount = (ushort)tableBuilders.Count;

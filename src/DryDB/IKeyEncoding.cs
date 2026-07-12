@@ -16,6 +16,22 @@ public interface IKeyEncoding : IComparer<ReadOnlyMemory<byte>>
 
     int Compare(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b);
 
+    /// <summary>
+    /// Whether <see cref="GetKeyDigest"/> yields an order-preserving digest for this
+    /// encoding. When true, the database builder stores a contiguous array of digests
+    /// in each B+Tree node and searches probe that array instead of dereferencing the
+    /// variable-length keys — one cache line covers eight probes.
+    /// </summary>
+    bool SupportsKeyDigest => false;
+
+    /// <summary>
+    /// A 64-bit order-preserving digest of the encoded key:
+    /// digest(a) &lt; digest(b) implies Compare(a, b) &lt; 0, and Compare(a, b) &lt; 0
+    /// implies digest(a) &lt;= digest(b). Equal digests are ambiguous and the caller
+    /// falls back to <see cref="Compare(ReadOnlySpan{byte}, ReadOnlySpan{byte})"/>.
+    /// </summary>
+    ulong GetKeyDigest(ReadOnlySpan<byte> key) => 0;
+
     int GetMaxEncodedByteCount<TKey>(TKey key)
         where TKey : IComparable<TKey>;
 
@@ -94,6 +110,19 @@ public sealed class Int64LittleEndianEncoding : IKeyEncoding
         var na = Unsafe.ReadUnaligned<long>(ref MemoryMarshal.GetReference(a));
         var nb = Unsafe.ReadUnaligned<long>(ref MemoryMarshal.GetReference(b));
         return (na > nb ? 1 : 0) - (na < nb ? 1 : 0);
+    }
+
+    public bool SupportsKeyDigest => true;
+
+    /// <summary>
+    /// Exact digest: flipping the sign bit maps the signed comparison onto the
+    /// unsigned digest comparison, so equal digests mean equal keys.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public ulong GetKeyDigest(ReadOnlySpan<byte> key)
+    {
+        var value = Unsafe.ReadUnaligned<long>(ref MemoryMarshal.GetReference(key));
+        return (ulong)value ^ 0x8000_0000_0000_0000UL;
     }
 
     public int GetMaxEncodedByteCount<TKey>(TKey key)
@@ -190,6 +219,24 @@ public sealed class AsciiOrdinalEncoding : IKeyEncoding
     public int Compare(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b)
     {
         return a.SequenceCompareTo(b);
+    }
+
+    public bool SupportsKeyDigest => true;
+
+    /// <summary>
+    /// The first eight key bytes packed big-endian (zero padded), which preserves the
+    /// byte-lexicographic order. Keys sharing an 8-byte prefix collide and fall back
+    /// to the full comparison.
+    /// </summary>
+    public ulong GetKeyDigest(ReadOnlySpan<byte> key)
+    {
+        var length = Math.Min(key.Length, sizeof(ulong));
+        var digest = 0UL;
+        for (var i = 0; i < length; i++)
+        {
+            digest |= (ulong)key[i] << (56 - i * 8);
+        }
+        return digest;
     }
 
     public int GetMaxEncodedByteCount<TKey>(TKey key) where TKey : IComparable<TKey>

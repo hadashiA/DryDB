@@ -12,7 +12,7 @@ namespace DryDB.BTree;
 /// </summary>
 /// <remarks>
 /// </remarks>
-readonly ref struct InternalNodeReader(ReadOnlySpan<byte> page, int entryCount)
+readonly ref struct InternalNodeReader(ReadOnlySpan<byte> page, int entryCount, bool hasKeyDigests)
 {
     [StructLayout(LayoutKind.Explicit, Size = 6, Pack = 1)]
     struct NodeEntryMeta
@@ -24,11 +24,15 @@ readonly ref struct InternalNodeReader(ReadOnlySpan<byte> page, int entryCount)
         public ushort KeyLength;
     }
 
+    static readonly int DigestBase = Unsafe.SizeOf<PageHeader>() + Unsafe.SizeOf<NodeHeader>();
+
 #if NETSTANDARD
     readonly ReadOnlySpan<byte> page = page;
 #else
     readonly ref byte pageReference = ref MemoryMarshal.GetReference(page);
 #endif
+    readonly int metaBase = DigestBase + (hasKeyDigests ? entryCount * sizeof(ulong) : 0);
+    readonly bool hasKeyDigests = hasKeyDigests;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void GetAt(int index, out ReadOnlySpan<byte> key, out PageNumber childPageNumber)
@@ -45,11 +49,18 @@ readonly ref struct InternalNodeReader(ReadOnlySpan<byte> page, int entryCount)
         childPageNumber = Unsafe.ReadUnaligned<PageNumber>(ref ptr);
     }
 
-    public bool TrySearch(ReadOnlySpan<byte> key, IKeyEncoding keyEncoding, out PageNumber childPageNumber)
+    public bool TrySearch(
+        ReadOnlySpan<byte> key,
+        IKeyEncoding keyEncoding,
+        ulong keyDigest,
+        bool hasKeyDigest,
+        out PageNumber childPageNumber)
     {
 #if NETSTANDARD
         ref var pageReference = ref MemoryMarshal.GetReference(page);
 #endif
+        var useDigest = hasKeyDigests && hasKeyDigest;
+
         var min = 0;
         var max = entryCount;
 
@@ -58,11 +69,22 @@ readonly ref struct InternalNodeReader(ReadOnlySpan<byte> page, int entryCount)
         {
             var mid = min + ((max - min) >> 1);
 
-            meta = GetMeta(mid);
-            ref var ptr = ref Unsafe.Add(ref pageReference, meta.PageOffset);
+            int cmp;
+            if (useDigest)
+            {
+                // One contiguous load instead of dereferencing the variable-length key;
+                // only digest ties fall back to the full comparison.
+                var digest = Unsafe.ReadUnaligned<ulong>(
+                    ref Unsafe.Add(ref pageReference, DigestBase + mid * sizeof(ulong)));
+                cmp = digest != keyDigest
+                    ? (digest < keyDigest ? -1 : 1)
+                    : CompareFull(ref pageReference, mid, key, keyEncoding);
+            }
+            else
+            {
+                cmp = CompareFull(ref pageReference, mid, key, keyEncoding);
+            }
 
-            var midKey = MemoryMarshal.CreateReadOnlySpan(ref ptr, meta.KeyLength);
-            var cmp = KeyCompare.Compare(keyEncoding, midKey, key);
             if (cmp <= 0) // upper bounds
             {
                 min = mid + 1;
@@ -80,6 +102,16 @@ readonly ref struct InternalNodeReader(ReadOnlySpan<byte> page, int entryCount)
                 ref pageReference,
                 meta.PageOffset + meta.KeyLength));
         return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    int CompareFull(ref byte pageReference, int index, ReadOnlySpan<byte> key, IKeyEncoding keyEncoding)
+    {
+        var meta = GetMeta(index);
+        var entryKey = MemoryMarshal.CreateReadOnlySpan(
+            ref Unsafe.Add(ref pageReference, meta.PageOffset),
+            meta.KeyLength);
+        return KeyCompare.Compare(keyEncoding, entryKey, key);
     }
 
     // for debug purpose
@@ -125,8 +157,7 @@ readonly ref struct InternalNodeReader(ReadOnlySpan<byte> page, int entryCount)
 #endif
         ref var ptr = ref Unsafe.Add(
             ref pageReference,
-            Unsafe.SizeOf<PageHeader>() + Unsafe.SizeOf<NodeHeader>() +
-            index * Unsafe.SizeOf<NodeEntryMeta>());
+            metaBase + index * Unsafe.SizeOf<NodeEntryMeta>());
         return Unsafe.ReadUnaligned<NodeEntryMeta>(ref ptr);
     }
 }

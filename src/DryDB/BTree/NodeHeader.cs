@@ -10,6 +10,19 @@ enum NodeKind
     Internal = 1,
 }
 
+static class NodeFlags
+{
+    // The low byte of the on-disk kind field is the NodeKind; the upper bits carry
+    // per-page format flags. Old files have no flags set and keep the old layout.
+    public const int KindMask = 0xFF;
+
+    /// <summary>
+    /// A contiguous array of 8-byte key digests sits between the node header and the
+    /// entry metadata.
+    /// </summary>
+    public const int HasKeyDigests = 1 << 8;
+}
+
 static class NodeHeaderExtensions
 {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -30,8 +43,21 @@ static class NodeHeaderExtensions
 [StructLayout(LayoutKind.Explicit, Pack = 1)]
 unsafe struct NodeHeader
 {
+    // Raw on-disk kind field: low byte is the NodeKind, upper bits are NodeFlags.
     [FieldOffset(0)]
     public NodeKind Kind;
+
+    public NodeKind NodeKind
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => (NodeKind)((int)Kind & NodeFlags.KindMask);
+    }
+
+    public bool HasKeyDigests
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => ((int)Kind & NodeFlags.HasKeyDigests) != 0;
+    }
 
     [FieldOffset(4)]
     public fixed byte EntryCountBytes[4];
