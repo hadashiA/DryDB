@@ -33,6 +33,30 @@ public class ReadBenchmark : StoreBenchmarkBase
         }
     }
 
+    [Benchmark]
+    public async Task DryDB_FindByKeyAsync()
+    {
+        for (var i = 0; i < Iterations; i++)
+        {
+            var table = database.GetTable("items");
+            using var _ = await table.GetAsync(FindKey);
+        }
+    }
+
+    // Pseudo-random key sequence: unlike the fixed-key variants, the binary search
+    // branches cannot be learned by the branch predictor.
+    [Benchmark]
+    public void DryDB_FindByKey_RandomKeys()
+    {
+        var seed = 123456789u;
+        for (var i = 0; i < Iterations; i++)
+        {
+            seed = seed * 1664525u + 1013904223u; // LCG: cheap, deterministic
+            var table = database.GetTable("items");
+            using var _ = table.Get((long)(seed % N));
+        }
+    }
+
     const int ThreadCount = 8;
 
     [Benchmark]

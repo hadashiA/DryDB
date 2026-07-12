@@ -26,12 +26,20 @@ public class RangeResult : IDisposable, IEnumerable<ReadOnlyMemory<byte>>
 
     readonly List<ReadOnlyMemory<byte>> list = [];
     readonly List<IPageEntry> referencePages = [];
+    IPageEntry? lastReferencedPage;
 
     internal void Add(IPageEntry page, int start, int length)
     {
-        page.Retain();
+        // Rows are appended leaf by leaf, so consecutive rows usually share the page.
+        // Retain once per run instead of once per row (a 100-row range used to cost
+        // ~200 interlocked ops; now it costs one pair per page).
+        if (!ReferenceEquals(page, lastReferencedPage))
+        {
+            page.Retain();
+            referencePages.Add(page);
+            lastReferencedPage = page;
+        }
         list.Add(page.Memory.Slice(start, length));
-        referencePages.Add(page);
     }
 
     public void Dispose()
@@ -44,6 +52,7 @@ public class RangeResult : IDisposable, IEnumerable<ReadOnlyMemory<byte>>
         }
         list.Clear();
         referencePages.Clear();
+        lastReferencedPage = null;
         Pool.Enqueue(this);
     }
 

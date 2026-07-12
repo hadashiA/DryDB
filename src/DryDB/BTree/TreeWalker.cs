@@ -136,6 +136,39 @@ class TreeWalker
         return new PageLease(page, true);
     }
 
+    /// <summary>
+    /// Cache-only variant of <see cref="GetPage"/>: never loads. Used by the synchronous
+    /// fast path of the async APIs.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    bool TryGetPage(PageNumber pageNumber, out PageLease lease)
+    {
+        if (pageNumber == RootPageNumber)
+        {
+            var root = pinnedRoot;
+            if (root != null)
+            {
+                lease = new PageLease(root, false);
+                return true;
+            }
+            if (PageCache.TryGet(pageNumber, out var rootPage))
+            {
+                lease = PinRoot(rootPage);
+                return true;
+            }
+            lease = default;
+            return false;
+        }
+
+        if (PageCache.TryGet(pageNumber, out var page))
+        {
+            lease = new PageLease(page, true);
+            return true;
+        }
+        lease = default;
+        return false;
+    }
+
     public SingleValueResult Get(ReadOnlySpan<byte> key)
     {
         var pageNumber = RootPageNumber;
@@ -174,9 +207,82 @@ class TreeWalker
         }
     }
 
-    public async ValueTask<SingleValueResult> GetAsync(
+    public ValueTask<SingleValueResult> GetAsync(
         ReadOnlyMemory<byte> key,
         CancellationToken cancellationToken = default)
+    {
+        // When every page on the path is already cached (the common case), complete
+        // synchronously — going through the async state machine costs ~4x the walk.
+        if (TryGetFromCache(key.Span, out var result))
+        {
+            return new ValueTask<SingleValueResult>(result);
+        }
+        return GetSlowAsync(key, cancellationToken);
+    }
+
+    /// <summary>
+    /// Attempt the whole lookup against cached pages only. Returns false when any page
+    /// on the path (including an overflow page) is not cached and IO would be required.
+    /// </summary>
+    internal bool TryGetFromCache(scoped ReadOnlySpan<byte> key, out SingleValueResult result)
+    {
+        var pageNumber = RootPageNumber;
+        while (true)
+        {
+            if (!TryGetPage(pageNumber, out var lease))
+            {
+                result = default;
+                return false;
+            }
+
+            var pageSpan = lease.Page.Memory.Span;
+            var header = NodeHeader.Parse(pageSpan);
+            if (header.Kind == NodeKind.Internal)
+            {
+                var descended = new InternalNodeReader(pageSpan, header.EntryCount)
+                    .TrySearch(key, comparer, out pageNumber);
+                lease.Release();
+                if (!descended)
+                {
+                    result = SingleValueResult.Empty;
+                    return true;
+                }
+            }
+            else // Leaf
+            {
+                var leafNode = new LeafNodeReader(pageSpan, header.EntryCount);
+                if (leafNode.TryFindValue(key, comparer, out _, out var valueOffset, out var valueLength))
+                {
+                    if (LeafNodeReader.IsOverflow(valueLength))
+                    {
+                        var blobPageNumberValue = Unsafe.ReadUnaligned<long>(
+                            ref Unsafe.Add(ref MemoryMarshal.GetReference(pageSpan), valueOffset));
+                        if (!PageCache.TryGet(new PageNumber(blobPageNumberValue), out var blobPage))
+                        {
+                            lease.Release();
+                            result = default;
+                            return false;
+                        }
+
+                        lease.Release();
+                        var blobLength = blobPage.GetLength() - BlobDataOffset;
+                        result = new SingleValueResult(new PageSlice(blobPage, BlobDataOffset, blobLength), true);
+                        return true;
+                    }
+                    result = new SingleValueResult(new PageSlice(lease.Take(), valueOffset, valueLength), true);
+                    return true;
+                }
+
+                lease.Release();
+                result = SingleValueResult.Empty;
+                return true;
+            }
+        }
+    }
+
+    async ValueTask<SingleValueResult> GetSlowAsync(
+        ReadOnlyMemory<byte> key,
+        CancellationToken cancellationToken)
     {
         var pageNumber = RootPageNumber;
         while (true)
