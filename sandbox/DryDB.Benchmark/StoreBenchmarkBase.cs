@@ -38,6 +38,8 @@ public abstract class StoreBenchmarkBase
 
     protected RocksDb rocksDb = default!;
 
+    protected string drydbPath = default!;
+
     DirectoryInfo directory = default!;
 
     [GlobalSetup]
@@ -45,7 +47,7 @@ public abstract class StoreBenchmarkBase
     {
         directory = Directory.CreateTempSubdirectory("drydb_benchmarks");
         var sqlitePath = Path.Combine(directory.FullName, "bench.sqlite");
-        var drydbPath = Path.Combine(directory.FullName, "bench.drydb");
+        drydbPath = Path.Combine(directory.FullName, "bench.drydb");
         var rocksdbPath = Path.Combine(directory.FullName, "bench.rocksdb");
 
         // Setup sqlite
