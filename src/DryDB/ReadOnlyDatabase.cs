@@ -48,7 +48,7 @@ public sealed class ReadOnlyDatabase : IDisposable
         options ??= DatabaseLoadOptions.Default;
         var catalog = await DryDBCodec.ParseCatalogAsync(stream, cancellationToken);
         var storage = options.StorageFactory.Invoke(stream, catalog.PageSize);
-        return new ReadOnlyDatabase(catalog, storage, options);
+        return new ReadOnlyDatabase(catalog, storage, options, stream.Length);
     }
 
     public Catalog Catalog { get; }
@@ -56,11 +56,20 @@ public sealed class ReadOnlyDatabase : IDisposable
     readonly PageCache pageCache;
     readonly Dictionary<string, ReadOnlyTable> tables;
 
-    ReadOnlyDatabase(Catalog catalog, IPageLoader pageLoader, DatabaseLoadOptions options)
+    // A page occupies at least this many bytes on disk (headers + one entry), which
+    // bounds how many pages a file can possibly contain.
+    const int MinPageSizeOnDisk = 32;
+
+    ReadOnlyDatabase(Catalog catalog, IPageLoader pageLoader, DatabaseLoadOptions options, long dataLength)
     {
         Catalog = catalog;
         this.pageLoader = pageLoader;
-        var pageCacheCapacity = Math.Max(options.CacheSize / catalog.PageSize, 8);
+
+        // The cache can never hold more pages than the file contains: clamping the
+        // capacity keeps the eviction queues and ghost table from preallocating
+        // megabytes when a small database is opened with the (large) default CacheSize.
+        var maxPageCount = (int)Math.Min(int.MaxValue, dataLength / MinPageSizeOnDisk + 8);
+        var pageCacheCapacity = Math.Max(Math.Min(options.CacheSize / catalog.PageSize, maxPageCount), 8);
         pageCache = new PageCache(pageLoader, pageCacheCapacity, catalog.Filters?.ToArray() ?? []);
 
         tables = new Dictionary<string, ReadOnlyTable>(catalog.TableDescriptors.Count);
