@@ -55,6 +55,7 @@ static class TreeBuilder
         int pageSize,
         KeyValueList keyValues,
         IReadOnlyList<IPageFilter>? pageFilters = null,
+        bool keyDigests = true,
         CancellationToken cancellationToken = default)
     {
         if (pageSize < PageHeaderSize + 32)
@@ -64,9 +65,12 @@ static class TreeBuilder
 
         var wroteValuePointers = new List<PageRef>(keyValues.Count);
 
-        // When the encoding provides order-preserving digests, every node carries a
-        // contiguous 8-byte digest per entry, searched instead of the scattered keys.
-        var digestEncoding = keyValues.KeyEncoding.SupportsKeyDigest ? keyValues.KeyEncoding : null;
+        // When enabled and the encoding provides order-preserving digests, every node
+        // carries a contiguous 8-byte digest per entry, searched instead of the
+        // scattered keys.
+        var digestEncoding = keyDigests && keyValues.KeyEncoding.SupportsKeyDigest
+            ? keyValues.KeyEncoding
+            : null;
         var digestSize = digestEncoding != null ? sizeof(ulong) : 0;
 
         var nodes = new List<NodeEntry> { new(pageSize) };
