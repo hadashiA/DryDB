@@ -15,6 +15,13 @@ class DuplicateKeyEncoding(IKeyEncoding sourceEncoding) : IKeyEncoding
     public int Compare(ReadOnlyMemory<byte> a, ReadOnlyMemory<byte> b) =>
         Compare(a.Span, b.Span);
 
+    public bool SupportsKeyDigest => sourceEncoding.SupportsKeyDigest;
+
+    // The source key dominates the (source, rid) order, so its digest is a valid
+    // coarse digest for the composite key; rid ties collide and fall back.
+    public ulong GetKeyDigest(ReadOnlySpan<byte> key) =>
+        sourceEncoding.GetKeyDigest(key[..^sizeof(int)]);
+
     public int Compare(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b)
     {
         var aOriginal = a[..^sizeof(int)];

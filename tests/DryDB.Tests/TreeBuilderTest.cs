@@ -29,7 +29,7 @@ public class TreeBuilderTest
         var header = NodeHeader.Parse(result);
 
         Assert.That(buildResult.RootPageNumber.Value, Is.EqualTo(0));
-        Assert.That(header.Kind, Is.EqualTo(NodeKind.Leaf));
+        Assert.That(header.NodeKind, Is.EqualTo(NodeKind.Leaf));
     }
 
     [Test]
@@ -46,7 +46,6 @@ public class TreeBuilderTest
             { "key07"u8.ToArray(), "value07"u8.ToArray() },
             { "key08"u8.ToArray(), "value08"u8.ToArray() },
             { "key09"u8.ToArray(), "value09"u8.ToArray() },
-            { "key10"u8.ToArray(), "value10"u8.ToArray() },
         };
 
         var memoryStream = new MemoryStream();
@@ -58,19 +57,20 @@ public class TreeBuilderTest
         var result = memoryStream.ToArray();
 
         var header = NodeHeader.Parse(result.AsSpan((int)buildResult.RootPageNumber.Value));
-        Assert.That(header.Kind, Is.EqualTo(NodeKind.Internal));
-        Assert.That(header.EntryCount, Is.EqualTo(2));
+        Assert.That(header.NodeKind, Is.EqualTo(NodeKind.Internal));
+        Assert.That(header.EntryCount, Is.EqualTo(3));
 
-        var internalNode = new InternalNodeReader(result.AsSpan((int)buildResult.RootPageNumber.Value), header.EntryCount);
+        var internalNode = new InternalNodeReader(
+            result.AsSpan((int)buildResult.RootPageNumber.Value), header.EntryCount, header.HasKeyDigests);
         internalNode.GetAt(0, out var internalKey1, out var childPosition1);
         internalNode.GetAt(1, out var internalKey2, out var childPosition2);
 
         Assert.That(internalKey1.SequenceEqual("key01"u8), Is.True);
-        Assert.That(internalKey2.SequenceEqual("key06"u8), Is.True);
+        Assert.That(internalKey2.SequenceEqual("key04"u8), Is.True);
 
         header = NodeHeader.Parse(result.AsSpan((int)childPosition1.Value));
-        Assert.That(header.Kind, Is.EqualTo(NodeKind.Leaf));
-        Assert.That(header.EntryCount, Is.EqualTo(5));
+        Assert.That(header.NodeKind, Is.EqualTo(NodeKind.Leaf));
+        Assert.That(header.EntryCount, Is.EqualTo(3));
         Assert.That(header.LeftSiblingPageNumber.IsEmpty, Is.True);
         // Assert.That(header.RightSiblingPosition, Is.EqualTo());
 

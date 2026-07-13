@@ -137,6 +137,15 @@ public class DatabaseBuilder : IDisposable
 {
     public int PageSize { get; set; } = 4096;
 
+    /// <summary>
+    /// Store an order-preserving 8-byte digest per entry in every B+Tree node, which
+    /// speeds up key searches (~20-30% for cache-resident reads) at the cost of 8 bytes
+    /// per entry of file size. Encodings without digest support (e.g. UUIDv7 or custom
+    /// encodings) always use the plain layout regardless of this setting.
+    /// Disable to produce files byte-compatible with DryDB 1.0 readers.
+    /// </summary>
+    public bool KeyDigests { get; set; } = true;
+
     readonly MemoryArena arena = new();
     readonly List<TableBuilder> tableBuilders = [];
     FilterOptions? filterOptions;
@@ -174,7 +183,10 @@ public class DatabaseBuilder : IDisposable
             Header.MagicBytesValue.CopyTo(new Span<byte>(header.MagicBytes, Header.MagicBytesValue.Length));
         }
         header.MajorVersion = 1;
-        header.MinorVersion = 0;
+        // 1.1: B+Tree nodes may carry per-entry key digest arrays (flagged per page in
+        // the node header's kind field). 1.0 readers cannot parse such pages, so files
+        // built with KeyDigests disabled stay marked (and byte-compatible) as 1.0.
+        header.MinorVersion = (byte)(KeyDigests ? 1 : 0);
         header.PageFilterCount = (ushort)(filterOptions?.Filters.Count ?? 0);
         header.PageSize = PageSize;
         header.TableCount = (ushort)tableBuilders.Count;
@@ -207,6 +219,7 @@ public class DatabaseBuilder : IDisposable
                 tableBuilders[i].KeyValues,
                 filterOptions?.Filters,
                 indexDescriptorEndPositionsList[i],
+                KeyDigests,
                 cancellationToken);
         }
 
