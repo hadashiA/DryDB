@@ -17,7 +17,7 @@ public class NonUniqueSecondaryIndexQuery : IKeyValueStore
     {
         KeyEncoding = descriptor.KeyEncoding;
 
-        duplicateKeyTree = new TreeWalker(
+        duplicateKeyTree = TreeWalker.Create(
             descriptor.RootPageNumber,
             pageCache,
             new DuplicateKeyEncoding(descriptor.KeyEncoding));

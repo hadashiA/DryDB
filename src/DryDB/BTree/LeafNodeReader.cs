@@ -69,14 +69,15 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
         valueLength = meta.ValueLength;
     }
 
-    public bool TryFindValue(
+    public bool TryFindValue<TComparer>(
         scoped ReadOnlySpan<byte> key,
-        IKeyEncoding keyEncoding,
+        TComparer comparer,
         ulong keyDigest,
         bool hasKeyDigest,
         out int index,
         out int valueOffset,
         out ushort valueLength)
+        where TComparer : struct, IKeyComparer
     {
 #if NETSTANDARD
         ref var pageReference = ref MemoryMarshal.GetReference(page);
@@ -99,11 +100,11 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
                     ref Unsafe.Add(ref pageReference, DigestBase + midIndex * sizeof(ulong)));
                 compared = digest != keyDigest
                     ? (digest < keyDigest ? -1 : 1)
-                    : CompareFull(ref pageReference, midIndex, key, keyEncoding);
+                    : CompareFull(ref pageReference, midIndex, key, comparer);
             }
             else
             {
-                compared = CompareFull(ref pageReference, midIndex, key, keyEncoding);
+                compared = CompareFull(ref pageReference, midIndex, key, comparer);
             }
 
             if (compared == 0)
@@ -130,13 +131,14 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
         return false;
     }
 
-    public bool TrySearch(
+    public bool TrySearch<TComparer>(
         ReadOnlySpan<byte> key,
         SearchOperator op,
-        IKeyEncoding keyEncoding,
+        TComparer comparer,
         ulong keyDigest,
         bool hasKeyDigest,
         out int index)
+        where TComparer : struct, IKeyComparer
     {
 #if  NETSTANDARD
         ref var pageReference = ref MemoryMarshal.GetReference(page);
@@ -158,11 +160,11 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
                     ref Unsafe.Add(ref pageReference, DigestBase + midIndex * sizeof(ulong)));
                 compared = digest != keyDigest
                     ? (digest < keyDigest ? -1 : 1)
-                    : CompareFull(ref pageReference, midIndex, key, keyEncoding);
+                    : CompareFull(ref pageReference, midIndex, key, comparer);
             }
             else
             {
-                compared = CompareFull(ref pageReference, midIndex, key, keyEncoding);
+                compared = CompareFull(ref pageReference, midIndex, key, comparer);
             }
 
             switch (op)
@@ -221,7 +223,7 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
             case SearchOperator.Equal:
                 if (min < max)
                 {
-                    if (CompareFull(ref pageReference, min, key, keyEncoding) == 0)
+                    if (CompareFull(ref pageReference, min, key, comparer) == 0)
                     {
                         index = min;
                         return true;
@@ -247,13 +249,14 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    int CompareFull(ref byte pageReference, int index, ReadOnlySpan<byte> key, IKeyEncoding keyEncoding)
+    int CompareFull<TComparer>(ref byte pageReference, int index, ReadOnlySpan<byte> key, TComparer comparer)
+        where TComparer : struct, IKeyComparer
     {
         var meta = GetMeta(index);
         var entryKey = MemoryMarshal.CreateReadOnlySpan(
             ref Unsafe.Add(ref pageReference, meta.PageOffset),
             meta.KeyLength);
-        return KeyCompare.Compare(keyEncoding, entryKey, key);
+        return comparer.Compare(entryKey, key);
     }
 
     // for debug purpose
