@@ -83,6 +83,36 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
         ref var pageReference = ref MemoryMarshal.GetReference(page);
 #endif
         var useDigest = hasKeyDigests && hasKeyDigest;
+        if (useDigest && DigestSearch.IsAccelerated)
+        {
+            // Branch-free lower bound over the digest array; a match can only sit in
+            // the run of digests equal to keyDigest, which starts at the bound.
+            // (Order preservation: digest < keyDigest implies entry < key, and
+            // digest > keyDigest implies entry > key.)
+            var i = DigestSearch.LowerBound(ref pageReference, DigestBase, entryCount, keyDigest);
+            for (; i < entryCount; i++)
+            {
+                var digest = Unsafe.ReadUnaligned<ulong>(
+                    ref Unsafe.Add(ref pageReference, DigestBase + i * sizeof(ulong)));
+                if (digest != keyDigest) break;
+
+                var compared = CompareFull(ref pageReference, i, key, comparer);
+                if (compared == 0)
+                {
+                    var meta = GetMeta(i);
+                    index = i;
+                    valueOffset = meta.PageOffset + meta.KeyLength;
+                    valueLength = meta.ValueLength;
+                    return true;
+                }
+                if (compared > 0) break;
+            }
+
+            index = default;
+            valueOffset = default;
+            valueLength = default;
+            return false;
+        }
 
         var min = 0;
         var max = entryCount;
@@ -144,6 +174,70 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
         ref var pageReference = ref MemoryMarshal.GetReference(page);
 #endif
         var useDigest = hasKeyDigests && hasKeyDigest;
+        if (useDigest && DigestSearch.IsAccelerated)
+        {
+            // Branch-free lower bound over the digest array, then resolve the bound
+            // inside the run of equal digests with full comparisons (run length is
+            // almost always 0 or 1; exact digests such as Int64 never exceed 1).
+            // Entries before the bound are < key; the first entry with a greater
+            // digest is > key, which already satisfies both bound operators.
+            var i = DigestSearch.LowerBound(ref pageReference, DigestBase, entryCount, keyDigest);
+            switch (op)
+            {
+                case SearchOperator.Equal:
+                    for (; i < entryCount; i++)
+                    {
+                        var digest = Unsafe.ReadUnaligned<ulong>(
+                            ref Unsafe.Add(ref pageReference, DigestBase + i * sizeof(ulong)));
+                        if (digest != keyDigest) break;
+
+                        var compared = CompareFull(ref pageReference, i, key, comparer);
+                        if (compared == 0)
+                        {
+                            index = i;
+                            return true;
+                        }
+                        if (compared > 0) break;
+                    }
+                    index = default;
+                    return false;
+
+                case SearchOperator.LowerBound:
+                    // first entry >= key
+                    while (i < entryCount)
+                    {
+                        var digest = Unsafe.ReadUnaligned<ulong>(
+                            ref Unsafe.Add(ref pageReference, DigestBase + i * sizeof(ulong)));
+                        if (digest != keyDigest) break;
+                        if (CompareFull(ref pageReference, i, key, comparer) >= 0) break;
+                        i++;
+                    }
+                    break;
+
+                case SearchOperator.UpperBound:
+                    // first entry > key
+                    while (i < entryCount)
+                    {
+                        var digest = Unsafe.ReadUnaligned<ulong>(
+                            ref Unsafe.Add(ref pageReference, DigestBase + i * sizeof(ulong)));
+                        if (digest != keyDigest) break;
+                        if (CompareFull(ref pageReference, i, key, comparer) > 0) break;
+                        i++;
+                    }
+                    break;
+
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(op), op, null);
+            }
+
+            if (i >= entryCount)
+            {
+                index = default;
+                return false;
+            }
+            index = i;
+            return true;
+        }
 
         var min = 0;
         var max = entryCount;
