@@ -61,7 +61,7 @@ public class TreeBuilderTest
         Assert.That(header.EntryCount, Is.EqualTo(3));
 
         var internalNode = new InternalNodeReader(
-            result.AsSpan((int)buildResult.RootPageNumber.Value), header.EntryCount, header.HasKeyDigests);
+            result.AsSpan((int)buildResult.RootPageNumber.Value), header.EntryCount, header.HasKeyDigests, header.HasEytzingerDigests);
         internalNode.GetAt(0, out var internalKey1, out var childPosition1);
         internalNode.GetAt(1, out var internalKey2, out var childPosition2);
 

@@ -146,6 +146,16 @@ public class DatabaseBuilder : IDisposable
     /// </summary>
     public bool KeyDigests { get; set; } = true;
 
+    /// <summary>
+    /// Store each node's key digest array as a MaxValue-padded complete binary tree in
+    /// Eytzinger (BFS) order instead of sorted order, which makes the digest search a
+    /// branch-free descent whose top levels share a cache line. Costs up to 2x the
+    /// digest area (padding to 2^k - 1 slots) and produces format 1.2 files, which
+    /// readers older than 1.2 cannot parse. No effect unless <see cref="KeyDigests"/>
+    /// is enabled and the encoding supports digests.
+    /// </summary>
+    public bool EytzingerDigests { get; set; } = false;
+
     readonly MemoryArena arena = new();
     readonly List<TableBuilder> tableBuilders = [];
     FilterOptions? filterOptions;
@@ -186,7 +196,9 @@ public class DatabaseBuilder : IDisposable
         // 1.1: B+Tree nodes may carry per-entry key digest arrays (flagged per page in
         // the node header's kind field). 1.0 readers cannot parse such pages, so files
         // built with KeyDigests disabled stay marked (and byte-compatible) as 1.0.
-        header.MinorVersion = (byte)(KeyDigests ? 1 : 0);
+        // 1.2: the digest array may be Eytzinger-ordered (a second per-page flag);
+        // 1.1 readers cannot parse such pages.
+        header.MinorVersion = (byte)(KeyDigests ? (EytzingerDigests ? 2 : 1) : 0);
         header.PageFilterCount = (ushort)(filterOptions?.Filters.Count ?? 0);
         header.PageSize = PageSize;
         header.TableCount = (ushort)tableBuilders.Count;
@@ -220,6 +232,7 @@ public class DatabaseBuilder : IDisposable
                 filterOptions?.Filters,
                 indexDescriptorEndPositionsList[i],
                 KeyDigests,
+                EytzingerDigests,
                 cancellationToken);
         }
 

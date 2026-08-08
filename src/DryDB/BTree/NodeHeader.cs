@@ -21,6 +21,14 @@ static class NodeFlags
     /// entry metadata.
     /// </summary>
     public const int HasKeyDigests = 1 << 8;
+
+    /// <summary>
+    /// The digest array is stored as a complete binary tree in Eytzinger (BFS) order,
+    /// padded with <see cref="ulong.MaxValue"/> to 2^k - 1 slots, instead of sorted
+    /// order. Only valid together with <see cref="HasKeyDigests"/>. Introduced in
+    /// format 1.2.
+    /// </summary>
+    public const int EytzingerDigests = 1 << 9;
 }
 
 static class NodeHeaderExtensions
@@ -57,6 +65,12 @@ unsafe struct NodeHeader
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         get => ((int)Kind & NodeFlags.HasKeyDigests) != 0;
+    }
+
+    public bool HasEytzingerDigests
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => ((int)Kind & NodeFlags.EytzingerDigests) != 0;
     }
 
     [FieldOffset(4)]

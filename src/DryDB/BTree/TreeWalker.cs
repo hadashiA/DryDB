@@ -309,7 +309,8 @@ abstract class TreeWalker
         }
 
         var (page, entryIndex) = minLeaf.Value;
-        var leafNode = new LeafNodeReader(page.Memory.Span, NodeHeader.Parse(page.Memory.Span).EntryCount, NodeHeader.Parse(page.Memory.Span).HasKeyDigests);
+        var header = NodeHeader.Parse(page.Memory.Span);
+        var leafNode = new LeafNodeReader(page.Memory.Span, header.EntryCount, header.HasKeyDigests, header.HasEytzingerDigests);
         leafNode.GetAt(entryIndex, out var pageOffset, out var keyLength, out var valueLength);
 
         if (LeafNodeReader.IsOverflow(valueLength))
@@ -332,7 +333,8 @@ abstract class TreeWalker
         }
 
         var (page, entryIndex) = maxLeaf.Value;
-        var leafNode = new LeafNodeReader(page.Memory.Span, NodeHeader.Parse(page.Memory.Span).EntryCount, NodeHeader.Parse(page.Memory.Span).HasKeyDigests);
+        var header = NodeHeader.Parse(page.Memory.Span);
+        var leafNode = new LeafNodeReader(page.Memory.Span, header.EntryCount, header.HasKeyDigests, header.HasEytzingerDigests);
         leafNode.GetAt(entryIndex, out var pageOffset, out var keyLength, out var valueLength);
 
         if (LeafNodeReader.IsOverflow(valueLength))
@@ -362,7 +364,7 @@ abstract class TreeWalker
                     return null;
                 }
 
-                var internalNode = new InternalNodeReader(pageSpan, header.EntryCount, header.HasKeyDigests);
+                var internalNode = new InternalNodeReader(pageSpan, header.EntryCount, header.HasKeyDigests, header.HasEytzingerDigests);
                 internalNode.GetAt(0, out _, out pageNumber);
                 lease.Release();
             }
@@ -394,7 +396,7 @@ abstract class TreeWalker
                     return null;
                 }
 
-                var internalNode = new InternalNodeReader(pageSpan, header.EntryCount, header.HasKeyDigests);
+                var internalNode = new InternalNodeReader(pageSpan, header.EntryCount, header.HasKeyDigests, header.HasEytzingerDigests);
                 internalNode.GetAt(header.EntryCount - 1, out _, out pageNumber);
                 lease.Release();
             }

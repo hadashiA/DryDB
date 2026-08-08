@@ -149,6 +149,7 @@ static partial class DryDBCodec
         IReadOnlyList<IPageFilter>? pageFilters,
         long[] indexDescriptorEndPositions,
         bool keyDigests = true,
+        bool eytzingerDigests = false,
         CancellationToken cancellationToken = default)
     {
         // write primary tree
@@ -158,6 +159,7 @@ static partial class DryDBCodec
             keyValues,
             pageFilters,
             keyDigests,
+            eytzingerDigests,
             cancellationToken);
 
         // write primary tree root position
@@ -183,7 +185,7 @@ static partial class DryDBCodec
             }
 
             // write secondary key tree
-            var secondaryKeyResult = await TreeBuilder.BuildToAsync(stream, pageSize, secondaryKeyValues, pageFilters, keyDigests, cancellationToken);
+            var secondaryKeyResult = await TreeBuilder.BuildToAsync(stream, pageSize, secondaryKeyValues, pageFilters, keyDigests, eytzingerDigests, cancellationToken);
 
             // write secondary tree root position
             Span<byte> positionBuffer2 = stackalloc byte[sizeof(long)];
