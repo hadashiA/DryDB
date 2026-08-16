@@ -57,6 +57,25 @@ public class ReadBenchmark : StoreBenchmarkBase
         }
     }
 
+    uint noRepeatSeed = 123456789u;
+
+    // The variant above re-seeds every op, so the same 1000-key sequence repeats and a
+    // large branch predictor gradually memorizes its branch history across invocations.
+    // Carrying the seed across ops makes the sequence genuinely non-repeating — the
+    // closest model of real random access.
+    [Benchmark]
+    public void DryDB_FindByKey_RandomKeys_NoRepeat()
+    {
+        var seed = noRepeatSeed;
+        for (var i = 0; i < Iterations; i++)
+        {
+            seed = seed * 1664525u + 1013904223u;
+            var table = database.GetTable("items");
+            using var _ = table.Get((long)(seed % N));
+        }
+        noRepeatSeed = seed;
+    }
+
     const int ThreadCount = 8;
 
     [Benchmark]

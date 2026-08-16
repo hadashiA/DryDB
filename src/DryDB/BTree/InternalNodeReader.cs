@@ -61,38 +61,55 @@ readonly ref struct InternalNodeReader(ReadOnlySpan<byte> page, int entryCount, 
         ref var pageReference = ref MemoryMarshal.GetReference(page);
 #endif
         var useDigest = hasKeyDigests && hasKeyDigest;
-
-        var min = 0;
-        var max = entryCount;
-
+        int min;
         NodeEntryMeta meta;
-        while (min < max)
+        if (useDigest && DigestSearch.IsAccelerated)
         {
-            var mid = min + ((max - min) >> 1);
-
-            int cmp;
-            if (useDigest)
+            // Branch-free lower bound over the digest array, then advance through the
+            // run of equal digests with full comparisons to reach the upper bound
+            // (first entry > key). Entries with a greater digest are already > key.
+            min = DigestSearch.LowerBound(ref pageReference, DigestBase, entryCount, keyDigest);
+            while (min < entryCount)
             {
-                // One contiguous load instead of dereferencing the variable-length key;
-                // only digest ties fall back to the full comparison.
                 var digest = Unsafe.ReadUnaligned<ulong>(
-                    ref Unsafe.Add(ref pageReference, DigestBase + mid * sizeof(ulong)));
-                cmp = digest != keyDigest
-                    ? (digest < keyDigest ? -1 : 1)
-                    : CompareFull(ref pageReference, mid, key, comparer);
+                    ref Unsafe.Add(ref pageReference, DigestBase + min * sizeof(ulong)));
+                if (digest != keyDigest) break;
+                if (CompareFull(ref pageReference, min, key, comparer) > 0) break;
+                min++;
             }
-            else
+        }
+        else
+        {
+            min = 0;
+            var max = entryCount;
+            while (min < max)
             {
-                cmp = CompareFull(ref pageReference, mid, key, comparer);
-            }
+                var mid = min + ((max - min) >> 1);
 
-            if (cmp <= 0) // upper bounds
-            {
-                min = mid + 1;
-            }
-            else
-            {
-                max = mid;
+                int cmp;
+                if (useDigest)
+                {
+                    // One contiguous load instead of dereferencing the variable-length
+                    // key; only digest ties fall back to the full comparison.
+                    var digest = Unsafe.ReadUnaligned<ulong>(
+                        ref Unsafe.Add(ref pageReference, DigestBase + mid * sizeof(ulong)));
+                    cmp = digest != keyDigest
+                        ? (digest < keyDigest ? -1 : 1)
+                        : CompareFull(ref pageReference, mid, key, comparer);
+                }
+                else
+                {
+                    cmp = CompareFull(ref pageReference, mid, key, comparer);
+                }
+
+                if (cmp <= 0) // upper bounds
+                {
+                    min = mid + 1;
+                }
+                else
+                {
+                    max = mid;
+                }
             }
         }
 
