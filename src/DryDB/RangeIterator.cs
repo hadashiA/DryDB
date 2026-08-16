@@ -31,7 +31,7 @@ public class RangeIterator :
                 throw new InvalidOperationException("Invalid node kind");
             }
 
-            var reader = new LeafNodeReader(currentPage.Memory.Span, header.EntryCount, header.HasKeyDigests);
+            var reader = new LeafNodeReader(currentPage.Memory.Span, header.EntryCount, header.HasKeyDigests, header.HasEytzingerDigests);
             reader.GetAt(currentEntryIndex, out var pageOffset, out var keyLength, out _);
             return currentPage.Memory.Slice(pageOffset, keyLength);
         }
@@ -49,7 +49,7 @@ public class RangeIterator :
             {
                 throw new InvalidOperationException("Invalid node kind");
             }
-            var reader = new LeafNodeReader(currentPage.Memory.Span, header.EntryCount, header.HasKeyDigests);
+            var reader = new LeafNodeReader(currentPage.Memory.Span, header.EntryCount, header.HasKeyDigests, header.HasEytzingerDigests);
             reader.GetAt(currentEntryIndex, out var pageOffset, out var keyLength, out var valueLength);
 
             if (LeafNodeReader.IsOverflow(valueLength))

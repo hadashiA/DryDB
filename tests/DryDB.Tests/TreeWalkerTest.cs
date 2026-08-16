@@ -31,7 +31,7 @@ public class TreeWalkerTest
         Assert.That(result, Is.True);
 
         var nodeHeader = NodeHeader.Parse(page.Memory.Span);
-        var leafNode = new LeafNodeReader(page.Memory.Span, nodeHeader.EntryCount, nodeHeader.HasKeyDigests);
+        var leafNode = new LeafNodeReader(page.Memory.Span, nodeHeader.EntryCount, nodeHeader.HasKeyDigests, nodeHeader.HasEytzingerDigests);
 
         leafNode.GetAt(index, out var pageOffset, out var keyLength, out var valueLength);
         var key = page.Memory.Span.Slice(pageOffset, keyLength);
@@ -70,7 +70,7 @@ public class TreeWalkerTest
         Assert.That(result, Is.True);
 
         var header = NodeHeader.Parse(page.Memory.Span);
-        var leafNode = new LeafNodeReader(page.Memory.Span, header.EntryCount, header.HasKeyDigests);
+        var leafNode = new LeafNodeReader(page.Memory.Span, header.EntryCount, header.HasKeyDigests, header.HasEytzingerDigests);
 
         leafNode.GetAt(pos, out var pageOffset, out var keyLength, out var valueLength);
         var key = page.Memory.Span.Slice(pageOffset, keyLength);
@@ -109,7 +109,7 @@ public class TreeWalkerTest
         Assert.That(result, Is.True);
 
         var header = NodeHeader.Parse(page.Memory.Span);
-        var leafNode = new LeafNodeReader(page.Memory.Span, header.EntryCount, header.HasKeyDigests);
+        var leafNode = new LeafNodeReader(page.Memory.Span, header.EntryCount, header.HasKeyDigests, header.HasEytzingerDigests);
 
         leafNode.GetAt(pos, out var pageOffset, out var keyLength, out var valueLength);
         var key = page.Memory.Span.Slice(pageOffset, keyLength);

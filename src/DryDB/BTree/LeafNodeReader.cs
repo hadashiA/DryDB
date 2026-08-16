@@ -12,7 +12,7 @@ namespace DryDB.BTree;
 /// </summary>>
 /// <remarks>
 /// </remarks>
-readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool hasKeyDigests)
+readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool hasKeyDigests, bool hasEytzingerDigests)
 {
     internal const ushort OverflowSentinel = ushort.MaxValue; // 0xFFFF
 
@@ -39,8 +39,11 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
 #else
     readonly ref byte pageReference = ref MemoryMarshal.GetReference(page);
 #endif
-    readonly int metaBase = DigestBase + (hasKeyDigests ? entryCount * sizeof(ulong) : 0);
+    readonly int metaBase = DigestBase + (hasKeyDigests
+        ? (hasEytzingerDigests ? EytzingerLayout.CompleteSize(entryCount) : entryCount) * sizeof(ulong)
+        : 0);
     readonly bool hasKeyDigests = hasKeyDigests;
+    readonly bool hasEytzingerDigests = hasEytzingerDigests;
 
     public void GetAt(int index, out ReadOnlySpan<byte> key, out ReadOnlySpan<byte> value)
     {
@@ -82,6 +85,34 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
 #if NETSTANDARD
         ref var pageReference = ref MemoryMarshal.GetReference(page);
 #endif
+        if (hasEytzingerDigests && hasKeyDigest)
+        {
+            // Branch-free descent yields the rank of the first entry whose digest is
+            // >= keyDigest; entries below the rank are < key. A match can only sit in
+            // the run of equal digests starting there, resolved with full comparisons
+            // (the digests are in Eytzinger order, so the run is walked via the keys).
+            var i = EytzingerLayout.LowerBoundRank(
+                ref pageReference, DigestBase, (metaBase - DigestBase) / sizeof(ulong), keyDigest);
+            for (; i < entryCount; i++)
+            {
+                var compared = CompareFull(ref pageReference, i, key, comparer);
+                if (compared == 0)
+                {
+                    var meta = GetMeta(i);
+                    index = i;
+                    valueOffset = meta.PageOffset + meta.KeyLength;
+                    valueLength = meta.ValueLength;
+                    return true;
+                }
+                if (compared > 0) break;
+            }
+
+            index = default;
+            valueOffset = default;
+            valueLength = default;
+            return false;
+        }
+
         var useDigest = hasKeyDigests && hasKeyDigest;
         if (useDigest && DigestSearch.IsAccelerated)
         {
@@ -173,6 +204,59 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
 #if  NETSTANDARD
         ref var pageReference = ref MemoryMarshal.GetReference(page);
 #endif
+        if (hasEytzingerDigests && hasKeyDigest)
+        {
+            // Branch-free descent to the rank of the first entry with digest >=
+            // keyDigest, then resolve the bound inside the run of equal digests with
+            // full comparisons. Entries past the run compare > key, which already
+            // satisfies both bound operators and terminates the walk.
+            var i = EytzingerLayout.LowerBoundRank(
+                ref pageReference, DigestBase, (metaBase - DigestBase) / sizeof(ulong), keyDigest);
+            switch (op)
+            {
+                case SearchOperator.Equal:
+                    for (; i < entryCount; i++)
+                    {
+                        var compared = CompareFull(ref pageReference, i, key, comparer);
+                        if (compared == 0)
+                        {
+                            index = i;
+                            return true;
+                        }
+                        if (compared > 0) break;
+                    }
+                    index = default;
+                    return false;
+
+                case SearchOperator.LowerBound:
+                    // first entry >= key
+                    while (i < entryCount && CompareFull(ref pageReference, i, key, comparer) < 0)
+                    {
+                        i++;
+                    }
+                    break;
+
+                case SearchOperator.UpperBound:
+                    // first entry > key
+                    while (i < entryCount && CompareFull(ref pageReference, i, key, comparer) <= 0)
+                    {
+                        i++;
+                    }
+                    break;
+
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(op), op, null);
+            }
+
+            if (i >= entryCount)
+            {
+                index = default;
+                return false;
+            }
+            index = i;
+            return true;
+        }
+
         var useDigest = hasKeyDigests && hasKeyDigest;
         if (useDigest && DigestSearch.IsAccelerated)
         {

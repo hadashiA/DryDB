@@ -50,12 +50,24 @@ static class TreeBuilder
     static readonly int PageHeaderSize = Unsafe.SizeOf<PageHeader>() + Unsafe.SizeOf<NodeHeader>();
     static readonly int RightSiblingPositionPageOffset = PageHeaderSize - sizeof(long);
 
+    /// <summary>
+    /// Bytes the digest array occupies for a node of <paramref name="entryCount"/>
+    /// entries: one slot per entry in sorted order, or a MaxValue-padded complete tree
+    /// (2^k - 1 slots) in Eytzinger order.
+    /// </summary>
+    static int DigestAreaSize(IKeyEncoding? digestEncoding, bool eytzinger, int entryCount)
+    {
+        if (digestEncoding == null) return 0;
+        return (eytzinger ? EytzingerLayout.CompleteSize(entryCount) : entryCount) * sizeof(ulong);
+    }
+
     public static async ValueTask<TreeBuildResult> BuildToAsync(
         Stream outStream,
         int pageSize,
         KeyValueList keyValues,
         IReadOnlyList<IPageFilter>? pageFilters = null,
         bool keyDigests = true,
+        bool eytzingerDigests = false,
         CancellationToken cancellationToken = default)
     {
         if (pageSize < PageHeaderSize + 32)
@@ -71,7 +83,7 @@ static class TreeBuilder
         var digestEncoding = keyDigests && keyValues.KeyEncoding.SupportsKeyDigest
             ? keyValues.KeyEncoding
             : null;
-        var digestSize = digestEncoding != null ? sizeof(ulong) : 0;
+        var eytzinger = eytzingerDigests && digestEncoding != null;
 
         var nodes = new List<NodeEntry> { new(pageSize) };
         nodes[0].Reset();
@@ -85,17 +97,19 @@ static class TreeBuilder
             }
 
             var isOverflow = false;
-            var inlineNeeds = PageHeaderSize + (leaf.EntryCount + 1) * (sizeof(int) + sizeof(ushort) * 2 + digestSize) +
+            var inlineNeeds = PageHeaderSize + (leaf.EntryCount + 1) * (sizeof(int) + sizeof(ushort) * 2) +
+                        DigestAreaSize(digestEncoding, eytzinger, leaf.EntryCount + 1) +
                         leaf.KeyValueBufferOffset + key.Length + value.Length;
             if (inlineNeeds > pageSize)
             {
                 // Check if it fits as overflow (key + 8-byte PageNumber.Value)
-                var overflowNeeds = PageHeaderSize + (leaf.EntryCount + 1) * (sizeof(int) + sizeof(ushort) * 2 + digestSize) +
+                var overflowNeeds = PageHeaderSize + (leaf.EntryCount + 1) * (sizeof(int) + sizeof(ushort) * 2) +
+                            DigestAreaSize(digestEncoding, eytzinger, leaf.EntryCount + 1) +
                             leaf.KeyValueBufferOffset + key.Length + sizeof(long);
                 if (overflowNeeds > pageSize)
                 {
                     // Current page is full even for overflow; rotate
-                    await RotatePageAsync(outStream, nodes, 0, true, wroteValuePointers, digestEncoding, pageFilters, cancellationToken)
+                    await RotatePageAsync(outStream, nodes, 0, true, wroteValuePointers, digestEncoding, eytzinger, pageFilters, cancellationToken)
                         .ConfigureAwait(false);
                     if (nodes[0].EntryCount <= 0)
                     {
@@ -105,7 +119,8 @@ static class TreeBuilder
                 }
 
                 // Recalculate after potential rotation
-                inlineNeeds = PageHeaderSize + (leaf.EntryCount + 1) * (sizeof(int) + sizeof(ushort) * 2 + digestSize) +
+                inlineNeeds = PageHeaderSize + (leaf.EntryCount + 1) * (sizeof(int) + sizeof(ushort) * 2) +
+                            DigestAreaSize(digestEncoding, eytzinger, leaf.EntryCount + 1) +
                             leaf.KeyValueBufferOffset + key.Length + value.Length;
                 if (inlineNeeds > pageSize)
                 {
@@ -163,7 +178,7 @@ static class TreeBuilder
             {
                 if (nodes[level].EntryCount > 0)
                 {
-                    await RotatePageAsync(outStream, nodes, level, true, wroteValuePointers, digestEncoding, pageFilters, cancellationToken).ConfigureAwait(false);
+                    await RotatePageAsync(outStream, nodes, level, true, wroteValuePointers, digestEncoding, eytzinger, pageFilters, cancellationToken).ConfigureAwait(false);
                     anyFlushed = true;
                 }
             }
@@ -173,7 +188,7 @@ static class TreeBuilder
         // Write the root (top level)
         if (nodes[^1].EntryCount > 0)
         {
-            await RotatePageAsync(outStream, nodes, nodes.Count - 1, false, wroteValuePointers, digestEncoding, pageFilters, cancellationToken).ConfigureAwait(false);
+            await RotatePageAsync(outStream, nodes, nodes.Count - 1, false, wroteValuePointers, digestEncoding, eytzinger, pageFilters, cancellationToken).ConfigureAwait(false);
         }
 
         var rootPageNumber = nodes[^1].PrevNodeStartPageNumber; // latest root
@@ -230,6 +245,7 @@ static class TreeBuilder
         bool promote,
         List<PageRef> wroteValueRefs,
         IKeyEncoding? digestEncoding,
+        bool eytzinger,
         IReadOnlyList<IPageFilter>? pageFilters = null,
         CancellationToken cancellationToken = default)
     {
@@ -239,13 +255,15 @@ static class TreeBuilder
         var kind = level == 0 ? NodeKind.Leaf : NodeKind.Internal;
         var nodeHeader = new NodeHeader
         {
-            Kind = (NodeKind)((int)kind | (digestEncoding != null ? NodeFlags.HasKeyDigests : 0)),
+            Kind = (NodeKind)((int)kind
+                              | (digestEncoding != null ? NodeFlags.HasKeyDigests : 0)
+                              | (eytzinger ? NodeFlags.EytzingerDigests : 0)),
             EntryCount = currentNode.EntryCount,
             LeftSiblingPageNumber = currentNode.PrevNodeStartPageNumber,
             RightSiblingPageNumber = PageNumber.Empty
         };
 
-        await FlushPageAsync(outStream, nodeHeader, currentNode, wroteValueRefs, digestEncoding, pageFilters, cancellationToken)
+        await FlushPageAsync(outStream, nodeHeader, currentNode, wroteValueRefs, digestEncoding, eytzinger, pageFilters, cancellationToken)
             .ConfigureAwait(false);
 
         // Patch RightSiblingPosition
@@ -289,12 +307,12 @@ static class TreeBuilder
             parent.FirstKey = sepKey;
         }
 
-        var digestSize = digestEncoding != null ? sizeof(ulong) : 0;
-        var needs = PageHeaderSize + (parent.EntryCount + 1) * (sizeof(int) + sizeof(ushort) + digestSize) +
+        var needs = PageHeaderSize + (parent.EntryCount + 1) * (sizeof(int) + sizeof(ushort)) +
+                    DigestAreaSize(digestEncoding, eytzinger, parent.EntryCount + 1) +
                     parent.KeyValueBufferOffset + sepKey.Length + sizeof(long);
         if (needs > parent.PageSize)
         {
-            await RotatePageAsync(outStream, nodeEntries, parentLevel, true, wroteValueRefs, digestEncoding, pageFilters, cancellationToken)
+            await RotatePageAsync(outStream, nodeEntries, parentLevel, true, wroteValueRefs, digestEncoding, eytzinger, pageFilters, cancellationToken)
                 .ConfigureAwait(false);
             if (parent.EntryCount == 0) parent.FirstKey = sepKey; // first key of new page
         }
@@ -325,14 +343,15 @@ static class TreeBuilder
         NodeEntry node,
         List<PageRef> wroteValueRefs,
         IKeyEncoding? digestEncoding,
+        bool eytzinger,
         IReadOnlyList<IPageFilter>? filters,
         CancellationToken cancellationToken = default)
     {
         var currentPageNumber = new PageNumber(outStream.Position);
 
-        var digestSize = digestEncoding != null ? sizeof(ulong) : 0;
+        var digestArea = DigestAreaSize(digestEncoding, eytzinger, node.EntryCount);
         var pageLength = PageHeaderSize +
-                         node.EntryCount * digestSize +
+                         digestArea +
                          node.EntryCount * (nodeHeader.NodeKind == NodeKind.Leaf
                              ? sizeof(int) + sizeof(ushort) * 2
                              : sizeof(int) + sizeof(ushort)) +
@@ -355,16 +374,39 @@ static class TreeBuilder
         // write key digests (keys sit at running offsets in KeyValueBuffer)
         if (digestEncoding != null)
         {
+            var digests = ArrayPool<ulong>.Shared.Rent(node.EntryCount);
             var keyOffset = 0;
             for (var i = 0; i < node.KeyValueSizes.Count; i++)
             {
                 var (keyLength, valueLength) = node.KeyValueSizes[i];
-                var digest = digestEncoding.GetKeyDigest(
+                digests[i] = digestEncoding.GetKeyDigest(
                     node.KeyValueBuffer.AsSpan(keyOffset, keyLength));
-                Unsafe.WriteUnaligned(ref ptr, digest);
-                ptr = ref Unsafe.Add(ref ptr, sizeof(ulong));
                 keyOffset += keyLength + valueLength;
             }
+
+            if (eytzinger)
+            {
+                // Scatter the sorted digests into a MaxValue-padded complete tree in
+                // Eytzinger order (see EytzingerLayout).
+                var slotCount = digestArea / sizeof(ulong);
+                var slots = ArrayPool<ulong>.Shared.Rent(slotCount);
+                EytzingerLayout.Scatter(digests.AsSpan(0, node.EntryCount), slots.AsSpan(0, slotCount));
+                for (var i = 0; i < slotCount; i++)
+                {
+                    Unsafe.WriteUnaligned(ref ptr, slots[i]);
+                    ptr = ref Unsafe.Add(ref ptr, sizeof(ulong));
+                }
+                ArrayPool<ulong>.Shared.Return(slots);
+            }
+            else
+            {
+                for (var i = 0; i < node.EntryCount; i++)
+                {
+                    Unsafe.WriteUnaligned(ref ptr, digests[i]);
+                    ptr = ref Unsafe.Add(ref ptr, sizeof(ulong));
+                }
+            }
+            ArrayPool<ulong>.Shared.Return(digests);
         }
 
         // write meta(s)
@@ -372,7 +414,7 @@ static class TreeBuilder
             ? sizeof(int) + sizeof(ushort) * 2
             : sizeof(int) + sizeof(ushort);
 
-        var payloadOffset = PageHeaderSize + node.EntryCount * digestSize + node.EntryCount * metaSize;
+        var payloadOffset = PageHeaderSize + digestArea + node.EntryCount * metaSize;
 
         for (var i = 0; i < node.KeyValueSizes.Count; i++)
         {

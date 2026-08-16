@@ -12,7 +12,7 @@ namespace DryDB.BTree;
 /// </summary>
 /// <remarks>
 /// </remarks>
-readonly ref struct InternalNodeReader(ReadOnlySpan<byte> page, int entryCount, bool hasKeyDigests)
+readonly ref struct InternalNodeReader(ReadOnlySpan<byte> page, int entryCount, bool hasKeyDigests, bool hasEytzingerDigests)
 {
     [StructLayout(LayoutKind.Explicit, Size = 6, Pack = 1)]
     struct NodeEntryMeta
@@ -31,8 +31,11 @@ readonly ref struct InternalNodeReader(ReadOnlySpan<byte> page, int entryCount, 
 #else
     readonly ref byte pageReference = ref MemoryMarshal.GetReference(page);
 #endif
-    readonly int metaBase = DigestBase + (hasKeyDigests ? entryCount * sizeof(ulong) : 0);
+    readonly int metaBase = DigestBase + (hasKeyDigests
+        ? (hasEytzingerDigests ? EytzingerLayout.CompleteSize(entryCount) : entryCount) * sizeof(ulong)
+        : 0);
     readonly bool hasKeyDigests = hasKeyDigests;
+    readonly bool hasEytzingerDigests = hasEytzingerDigests;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void GetAt(int index, out ReadOnlySpan<byte> key, out PageNumber childPageNumber)
@@ -60,9 +63,33 @@ readonly ref struct InternalNodeReader(ReadOnlySpan<byte> page, int entryCount, 
 #if NETSTANDARD
         ref var pageReference = ref MemoryMarshal.GetReference(page);
 #endif
+        NodeEntryMeta meta;
+        if (hasEytzingerDigests && hasKeyDigest)
+        {
+            // Branch-free descent to the rank of the first entry with digest >=
+            // keyDigest, then advance through the run of equal digests with full
+            // comparisons to reach the upper bound (first entry > key).
+            var i = EytzingerLayout.LowerBoundRank(
+                ref pageReference, DigestBase, (metaBase - DigestBase) / sizeof(ulong), keyDigest);
+            while (i < entryCount && CompareFull(ref pageReference, i, key, comparer) <= 0)
+            {
+                i++;
+            }
+
+            var childIndex = i == 0 ? 0 : i - 1;
+            meta = GetMeta(childIndex);
+            childPageNumber = Unsafe.ReadUnaligned<PageNumber>(
+                ref Unsafe.Add(
+                    ref pageReference,
+                    meta.PageOffset + meta.KeyLength));
+            return true;
+        }
+
+        // Reaching here with hasEytzingerDigests set means hasKeyDigest is false, so
+        // useDigest stays false and neither digest path below touches the (Eytzinger-
+        // ordered) digest array.
         var useDigest = hasKeyDigests && hasKeyDigest;
         int min;
-        NodeEntryMeta meta;
         if (useDigest && DigestSearch.IsAccelerated)
         {
             // Branch-free lower bound over the digest array, then advance through the
