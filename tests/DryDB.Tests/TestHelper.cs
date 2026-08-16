@@ -22,7 +22,7 @@ static class TestHelper
         var result = memoryStream.ToArray();
         var storage = new InMemoryPageLoader(result.ToArray());
         var pageCache = new PageCache(storage, 8, []);
-        return new TreeWalker(buildResult.RootPageNumber, pageCache, KeyEncoding.Ascii);
+        return TreeWalker.Create(buildResult.RootPageNumber, pageCache, KeyEncoding.Ascii);
     }
 
     public static async ValueTask<ReadOnlyTable> BuildTableAsync(

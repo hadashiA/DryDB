@@ -25,7 +25,7 @@ public sealed class ReadOnlyTable : IKeyValueStore
         this.descriptor = descriptor;
         KeyEncoding = descriptor.PrimaryKeyDescriptor.KeyEncoding;
 
-        primaryKeyTree = new TreeWalker(
+        primaryKeyTree = TreeWalker.Create(
             descriptor.PrimaryKeyDescriptor.RootPageNumber,
             pageCache,
             descriptor.PrimaryKeyDescriptor.KeyEncoding);

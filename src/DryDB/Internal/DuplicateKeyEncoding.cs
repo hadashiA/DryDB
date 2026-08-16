@@ -12,6 +12,8 @@ class DuplicateKeyEncoding(IKeyEncoding sourceEncoding) : IKeyEncoding
 {
     public string Id => sourceEncoding.Id;
 
+    public IKeyEncoding SourceEncoding => sourceEncoding;
+
     public int Compare(ReadOnlyMemory<byte> a, ReadOnlyMemory<byte> b) =>
         Compare(a.Span, b.Span);
 

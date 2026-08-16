@@ -14,7 +14,7 @@ public class SecondaryIndexQuery : IKeyValueStore
 
     internal SecondaryIndexQuery(IndexDescriptor descriptor, PageCache pageCache)
     {
-        tree = new TreeWalker(descriptor.RootPageNumber, pageCache, descriptor.KeyEncoding);
+        tree = TreeWalker.Create(descriptor.RootPageNumber, pageCache, descriptor.KeyEncoding);
     }
 
     internal void ReleasePinnedPages() => tree.ReleasePinnedRoot();

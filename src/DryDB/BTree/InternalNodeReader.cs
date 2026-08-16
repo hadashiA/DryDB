@@ -49,12 +49,13 @@ readonly ref struct InternalNodeReader(ReadOnlySpan<byte> page, int entryCount, 
         childPageNumber = Unsafe.ReadUnaligned<PageNumber>(ref ptr);
     }
 
-    public bool TrySearch(
+    public bool TrySearch<TComparer>(
         ReadOnlySpan<byte> key,
-        IKeyEncoding keyEncoding,
+        TComparer comparer,
         ulong keyDigest,
         bool hasKeyDigest,
         out PageNumber childPageNumber)
+        where TComparer : struct, IKeyComparer
     {
 #if NETSTANDARD
         ref var pageReference = ref MemoryMarshal.GetReference(page);
@@ -78,11 +79,11 @@ readonly ref struct InternalNodeReader(ReadOnlySpan<byte> page, int entryCount, 
                     ref Unsafe.Add(ref pageReference, DigestBase + mid * sizeof(ulong)));
                 cmp = digest != keyDigest
                     ? (digest < keyDigest ? -1 : 1)
-                    : CompareFull(ref pageReference, mid, key, keyEncoding);
+                    : CompareFull(ref pageReference, mid, key, comparer);
             }
             else
             {
-                cmp = CompareFull(ref pageReference, mid, key, keyEncoding);
+                cmp = CompareFull(ref pageReference, mid, key, comparer);
             }
 
             if (cmp <= 0) // upper bounds
@@ -105,13 +106,14 @@ readonly ref struct InternalNodeReader(ReadOnlySpan<byte> page, int entryCount, 
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    int CompareFull(ref byte pageReference, int index, ReadOnlySpan<byte> key, IKeyEncoding keyEncoding)
+    int CompareFull<TComparer>(ref byte pageReference, int index, ReadOnlySpan<byte> key, TComparer comparer)
+        where TComparer : struct, IKeyComparer
     {
         var meta = GetMeta(index);
         var entryKey = MemoryMarshal.CreateReadOnlySpan(
             ref Unsafe.Add(ref pageReference, meta.PageOffset),
             meta.KeyLength);
-        return KeyCompare.Compare(keyEncoding, entryKey, key);
+        return comparer.Compare(entryKey, key);
     }
 
     // for debug purpose
