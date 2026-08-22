@@ -113,6 +113,25 @@ The benchmark source is in [sandbox/DryDB.Benchmark](sandbox/DryDB.Benchmark).
 
 ## Why read-only ?
 
+DryDB was born from game development, where there is always a large body of data that is **fixed at build time**: character parameters, enemy behaviour, skills, items, map and stage layouts, cutscenes, scripts, dialogue — what game developers call *master data*. It is edited by designers with spreadsheet-like tools, shipped inside the package, and never written to at runtime.
+
+The usual options for shipping such data all have a catch:
+
+- **Engine-native assets** (e.g. Unity `ScriptableObject`) are not portable — a server or a tool cannot read them without the engine — and loading them from background threads is awkward.
+- **A serialized blob** (MessagePack, JSON, protobuf, in-memory databases built on top of them) is fast to query, but only after the whole thing has been deserialized. Everything lives in memory whether it is used or not, so without noticing you start treating *"fits in memory"* as the definition of master data.
+- **General-purpose embedded databases** (SQLite, LevelDB/RocksDB, LMDB) carry machinery you do not need on the client — SQL and an O/R mapper, or an LSM tree and write-ahead log tuned for concurrent writes — and every one of them is a native library behind a binding.
+
+What we actually want from a database in this setting is just one property: **data costs no memory until it is read.** Then you can put everything in — long dialogue text, every script's bytecode, every table — and stop writing load/unload logic. The database pages in what the current scene touches, and whatever is no longer referenced is simply left to the GC.
+
+Giving up writes is what makes the rest of the design simple and fast:
+
+- No transactions, so no MVCC, no write-ahead log, no locking protocol. The whole engine is a page cache plus a B+Tree.
+- The file is produced once by a builder, so the on-disk format can be laid out purely for reading: page addresses are baked in, nodes carry precomputed key digests, and layouts can be chosen for the CPU cache rather than for in-place updates.
+- Reads return zero-copy slices of cached pages, so the read path allocates nothing, and the page cache gives a hard upper bound on memory use.
+- It is pure C#: no native binaries to ship per platform, the same package works on .NET and Unity (including IL2CPP), and the page loader and page filters can be swapped for platform-specific implementations (e.g. `AsyncReadManager` + `NativeArray<byte>` on Unity, zstd compression).
+
+If your data changes at runtime, DryDB is not the right tool. If it is built, shipped, and read — it is exactly what DryDB is for.
+
 ## Installation
 
 ### NuGet
