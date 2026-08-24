@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using BenchmarkDotNet.Attributes;
 using CsSqlite;
+using LightningDB;
 
 namespace DryDB.Benchmark;
 
@@ -160,6 +161,24 @@ public class ReadBenchmark : StoreBenchmarkBase
         {
             var value = rocksDb.Get(key);
             total += value.Length;
+        }
+        return total;
+    }
+
+    // Long-lived read transaction + database handle (see StoreBenchmarkBase);
+    // the returned MDBValue is a zero-copy view into the memory map.
+    [Benchmark]
+    public int LMDB_FindByKey()
+    {
+        Span<byte> key = stackalloc byte[sizeof(long)];
+        BinaryPrimitives.WriteInt64BigEndian(key, FindKey);
+
+        var total = 0;
+        for (var i = 0; i < Iterations; i++)
+        {
+            var (resultCode, _, value) = lmdbTransaction.Get(lmdbDatabase, key);
+            if (resultCode != MDBResultCode.Success) throw new InvalidOperationException(resultCode.ToString());
+            total += value.AsSpan().Length;
         }
         return total;
     }

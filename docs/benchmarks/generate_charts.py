@@ -21,9 +21,10 @@ VALUES = {
         "aria": "Point lookup benchmark",
         "rows": [
             ("DryDB", 17, "17 ns", True, False),
-            ("RocksDB", 383, "383 ns", False, False),
-            ("SQLite (CsSqlite, prepared + immutable)", 552, "552 ns", False, False),
-            ("SQLite (CsSqlite, default)", 4287, "4,287 ns", False, True),
+            ("LMDB (LightningDB)", 49, "49 ns", False, False),
+            ("RocksDB", 242, "242 ns", False, False),
+            ("SQLite (CsSqlite, prepared + immutable)", 535, "535 ns", False, False),
+            ("SQLite (CsSqlite, default)", 4218, "4,218 ns", False, True),
         ],
     },
     "range_scan": {
@@ -31,10 +32,11 @@ VALUES = {
         "subtitle": "Read 100 consecutive rows by key range — time per query (lower is better)",
         "aria": "Range scan benchmark",
         "rows": [
-            ("DryDB", 0.45, "0.4 µs", True, False),
+            ("DryDB", 0.41, "0.4 µs", True, False),
+            ("LMDB (LightningDB)", 1.0, "1.0 µs", False, False),
             ("SQLite (CsSqlite, prepared + immutable)", 5.7, "5.7 µs", False, False),
-            ("SQLite (CsSqlite, default)", 10.0, "10 µs", False, False),
-            ("RocksDB", 10.1, "10.1 µs", False, False),
+            ("RocksDB", 8.7, "8.7 µs", False, False),
+            ("SQLite (CsSqlite, default)", 10.2, "10.2 µs", False, False),
         ],
     },
     "count_range": {
@@ -43,9 +45,10 @@ VALUES = {
         "aria": "Count by key range benchmark",
         "rows": [
             ("DryDB", 1.0, "1.0 µs", True, False),
-            ("SQLite (CsSqlite, prepared + immutable)", 102, "102 µs", False, False),
-            ("SQLite (CsSqlite, default)", 110, "110 µs", False, False),
-            ("RocksDB", 713, "713 µs", False, True),
+            ("LMDB (LightningDB)", 74, "74 µs", False, False),
+            ("SQLite (CsSqlite, prepared + immutable)", 83, "83 µs", False, False),
+            ("SQLite (CsSqlite, default)", 88, "88 µs", False, False),
+            ("RocksDB", 560, "560 µs", False, True),
         ],
     },
 }
@@ -81,14 +84,17 @@ def render(name: str, chart: dict, theme: dict) -> str:
     non_outlier_max = max(v for _, v, _, _, outlier in chart["rows"] if not outlier)
     scale = MAX_BAR / non_outlier_max
 
+    row_count = len(chart["rows"])
+    axis_bottom = FIRST_BAR_Y + (row_count - 1) * ROW_PITCH + 28  # matches the original 4-row geometry
+    height = axis_bottom + 39
     lines = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 242" width="800" height="242" '
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 {height}" width="800" height="{height}" '
         f'role="img" aria-label="{chart["aria"]}">',
-        f'  <rect x="0.5" y="0.5" width="799" height="241" rx="8" fill="{theme["bg"]}" stroke="{theme["border"]}"/>',
+        f'  <rect x="0.5" y="0.5" width="799" height="{height - 1}" rx="8" fill="{theme["bg"]}" stroke="{theme["border"]}"/>',
         '  <g font-family="ui-sans-serif, -apple-system, \'Segoe UI\', Helvetica, Arial, sans-serif">',
         f'    <text x="24" y="30" font-size="15" font-weight="600" fill="{theme["title"]}">{chart["title"]}</text>',
         f'    <text x="24" y="48" font-size="11.5" fill="{theme["sub"]}">{chart["subtitle"]}</text>',
-        f'    <line x1="{BAR_X:g}" y1="58" x2="{BAR_X:g}" y2="203" stroke="{theme["axis"]}" stroke-width="1"/>',
+        f'    <line x1="{BAR_X:g}" y1="58" x2="{BAR_X:g}" y2="{axis_bottom}" stroke="{theme["axis"]}" stroke-width="1"/>',
     ]
 
     for i, (label, value, value_text, is_drydb, is_outlier) in enumerate(chart["rows"]):
@@ -113,7 +119,7 @@ def render(name: str, chart: dict, theme: dict) -> str:
             f'font-weight="600" fill="{theme["value"]}">{value_text}</text>')
 
     lines += [
-        f'    <text x="24" y="230" font-size="10.5" fill="{theme["footer"]}">{FOOTER}</text>',
+        f'    <text x="24" y="{axis_bottom + 27}" font-size="10.5" fill="{theme["footer"]}">{FOOTER}</text>',
         '  </g>',
         '</svg>',
         '',

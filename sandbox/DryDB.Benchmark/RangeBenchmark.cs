@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using BenchmarkDotNet.Attributes;
 using CsSqlite;
+using LightningDB;
 
 namespace DryDB.Benchmark;
 
@@ -100,6 +101,29 @@ public class RangeBenchmark : StoreBenchmarkBase
             {
                 if (BinaryPrimitives.ReadInt64BigEndian(iterator.Key()) > RangeEnd) break;
                 total += iterator.Value().Length;
+            }
+        }
+        return total;
+    }
+
+    [Benchmark]
+    public int LMDB_GetRange()
+    {
+        Span<byte> startKey = stackalloc byte[sizeof(long)];
+        BinaryPrimitives.WriteInt64BigEndian(startKey, RangeStart);
+
+        var total = 0;
+        for (var i = 0; i < Iterations; i++)
+        {
+            using var cursor = lmdbTransaction.CreateCursor(lmdbDatabase);
+            var (resultCode, key, value) = cursor.SetRange(startKey) == MDBResultCode.Success
+                ? cursor.GetCurrent()
+                : (MDBResultCode.NotFound, default, default);
+            while (resultCode == MDBResultCode.Success)
+            {
+                if (BinaryPrimitives.ReadInt64BigEndian(key.AsSpan()) > RangeEnd) break;
+                total += value.AsSpan().Length;
+                (resultCode, key, value) = cursor.Next();
             }
         }
         return total;

@@ -11,6 +11,7 @@
     <ItemGroup>
       <PackageReference Include="BenchmarkDotNet" Version="0.15.6" />
       <PackageReference Include="CsSqlite" Version="1.1.0" />
+      <PackageReference Include="LightningDB" Version="0.23.0" />
       <PackageReference Include="RocksDB" Version="10.10.1.1747" />
       <PackageReference Include="System.Data.SQLite" Version="2.0.2" />
     </ItemGroup>
