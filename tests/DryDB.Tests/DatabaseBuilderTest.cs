@@ -34,7 +34,9 @@ public class DatabaseBuilderTest
         Assert.That(primaryKeyDescriptor.KeyEncoding, Is.EqualTo(KeyEncoding.Ascii));
         Assert.That(primaryKeyDescriptor.ValueKind, Is.EqualTo(ValueKind.RawData));
 
-        var treeBytes = memoryStream.ToArray().AsSpan((int)primaryKeyDescriptor.RootPageNumber.Value);
+        // RootPageNumber is an ordinal; resolve the byte offset through the page directory.
+        var treeBytes = memoryStream.ToArray().AsSpan(
+            (int)catalog.PageOffsets[(int)primaryKeyDescriptor.RootPageNumber.Value]);
         var nodeHeader = NodeHeader.Parse(treeBytes);
         Assert.That(nodeHeader.EntryCount, Is.EqualTo(3));
         Assert.That(nodeHeader.NodeKind, Is.EqualTo(NodeKind.Leaf));

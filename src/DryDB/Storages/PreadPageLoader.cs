@@ -22,7 +22,7 @@ public sealed class PreadPageLoader(SafeFileHandle handle) : IPageLoader
     public void Dispose() => handle.Dispose();
 
     public async ValueTask<IMemoryOwner<byte>> ReadPageAsync(
-        PageNumber pageNumber,
+        long position,
         IPageFilter[]? filters = null,
         CancellationToken cancellationToken = default)
     {
@@ -30,7 +30,7 @@ public sealed class PreadPageLoader(SafeFileHandle handle) : IPageLoader
         var n = await RandomAccess.ReadAsync(
             handle,
             lengthBuffer.AsMemory(0, sizeof(int)),
-            pageNumber.Value,
+            position,
             cancellationToken);
         if (n == 0)
         {
@@ -47,7 +47,7 @@ public sealed class PreadPageLoader(SafeFileHandle handle) : IPageLoader
             n = await RandomAccess.ReadAsync(
                 handle,
                 buffer,
-                pageNumber.Value + bytesRead,
+                position + bytesRead,
                 cancellationToken);
             if (n == 0)
             {
@@ -72,10 +72,10 @@ public sealed class PreadPageLoader(SafeFileHandle handle) : IPageLoader
         return destination;
     }
 
-    public IMemoryOwner<byte> ReadPage(PageNumber pageNumber, IPageFilter[]? filters = null)
+    public IMemoryOwner<byte> ReadPage(long position, IPageFilter[]? filters = null)
     {
         Span<byte> lengthBuffer = stackalloc byte[sizeof(int)];
-        RandomAccess.Read(handle, lengthBuffer, pageNumber.Value);
+        RandomAccess.Read(handle, lengthBuffer, position);
         var pageLength = BinaryPrimitives.ReadInt32LittleEndian(lengthBuffer);
 
         var bytesRead = 0;
@@ -86,7 +86,7 @@ public sealed class PreadPageLoader(SafeFileHandle handle) : IPageLoader
             var n = RandomAccess.Read(
                 handle,
                 buffer.Span,
-                pageNumber.Value + bytesRead);
+                position + bytesRead);
             if (n == 0)
             {
                 throw new EndOfStreamException();

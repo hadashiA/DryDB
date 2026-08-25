@@ -1,6 +1,5 @@
 using System;
 using System.Buffers;
-using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -8,8 +7,15 @@ using System.Threading.Tasks;
 namespace DryDB.Internal;
 
 /// <summary>
-/// Page cache (S3-FIFO)
+/// Page cache (S3-FIFO).
 /// </summary>
+/// <remarks>
+/// Pages are identified by their dense ordinal (format 1.3), so the whole "map" is a
+/// plain array indexed by ordinal: a cache hit is one volatile array read plus one
+/// refcount increment — no hashing, no key comparison, no per-entry node objects.
+/// The ghost set is likewise an epoch array: an ordinal is "in ghost" while its
+/// recorded eviction epoch lies within the last <c>ghostWindow</c> evictions.
+/// </remarks>
 public sealed class PageCache : IDisposable
 {
     enum QueueTag : byte
@@ -95,9 +101,17 @@ public sealed class PageCache : IDisposable
         }
     }
 
-    // readonly ConcurrentDictionary<PageNumber, Entry> entries = new();
-    readonly ConcurrentDictionary<PageNumber, Entry> map;
-    readonly ConcurrentDictionary<PageNumber, byte> ghost;
+    // ordinal -> live entry. This is the whole map.
+    readonly Entry?[] entries;
+
+    // ordinal -> epoch at which the page was last evicted from S (0 = never). The
+    // page is "in ghost" while (ghostClock - epoch) < ghostWindow, which models the
+    // classic bounded ghost FIFO without any allocation.
+    readonly int[] ghostEpoch;
+    int ghostClock;
+
+    // ordinal -> file offset, used only when a page must actually be loaded.
+    readonly long[] pageOffsets;
 
     readonly MpscRingQueue<Entry> sQueue;
     readonly MpscRingQueue<Entry> mQueue;
@@ -107,7 +121,9 @@ public sealed class PageCache : IDisposable
     readonly IPageFilter[]? filters;
     readonly int sTargetSize;
     readonly int mTargetSize;
+    readonly int ghostWindow;
 
+    int approxCount;
     int approxSSize;
     int approxMSize;
     int evicting; // 0 or 1
@@ -115,27 +131,24 @@ public sealed class PageCache : IDisposable
 
     internal PageCache(
         IPageLoader pageLoader,
+        long[] pageOffsets,
         int capacity,
         IPageFilter[]? filters,
         double smallFraction = 0.2,
         double ghostFraction = 1.0)
     {
         this.pageLoader = pageLoader;
-        this.capacity = capacity;
+        this.pageOffsets = pageOffsets;
+        // The cache can never hold more pages than the file contains.
+        this.capacity = capacity = Math.Max(2, Math.Min(capacity, pageOffsets.Length));
         this.filters = filters;
 
         sTargetSize = Math.Max(2, (int)(capacity * smallFraction));
-        mTargetSize = capacity - sTargetSize;
+        mTargetSize = Math.Max(1, capacity - sTargetSize);
+        ghostWindow = Math.Max(1, (int)(mTargetSize * ghostFraction));
 
-        // The dictionary grows on demand; preallocating buckets for the full capacity
-        // (up to ~512k pages with the default CacheSize) wastes megabytes at open.
-        map = new ConcurrentDictionary<PageNumber, Entry>(
-            Environment.ProcessorCount,
-            Math.Min(capacity, 4096));
-
-        ghost = new ConcurrentDictionary<PageNumber, byte>(
-            Environment.ProcessorCount,
-            (int)(mTargetSize * ghostFraction));
+        entries = new Entry?[pageOffsets.Length];
+        ghostEpoch = new int[pageOffsets.Length];
 
         var fifoCap = 1;
         while (fifoCap < capacity) fifoCap <<= 1;
@@ -146,13 +159,13 @@ public sealed class PageCache : IDisposable
 
     public void Dispose()
     {
-        lock (map)
+        lock (entries)
         {
             if (disposed) return;
 
-            foreach (var t in map.Values)
+            for (var i = 0; i < entries.Length; i++)
             {
-                t.Release();
+                Interlocked.Exchange(ref entries[i], null)?.Release();
             }
             disposed = true;
         }
@@ -160,7 +173,8 @@ public sealed class PageCache : IDisposable
 
     public bool TryGet(PageNumber pageNumber, out IPageEntry page)
     {
-        if (map.TryGetValue(pageNumber, out var entry))
+        var entry = Volatile.Read(ref entries[(int)pageNumber.Value]);
+        if (entry != null)
         {
             if (!entry.TryRetainIfAlive())
             {
@@ -203,13 +217,13 @@ public sealed class PageCache : IDisposable
                 return page;
             }
 
-            var buffer = pageLoader.ReadPage(pageNumber, filters);
+            var buffer = pageLoader.ReadPage(pageOffsets[(int)pageNumber.Value], filters);
             if (TryPublish(pageNumber, buffer, out page))
             {
                 return page;
             }
 
-            // Lost the publish race: another thread's entry is in the map. Our buffer
+            // Lost the publish race: another thread's entry is in the slot. Our buffer
             // was never published, so it can be disposed directly.
             buffer.Dispose();
         }
@@ -225,7 +239,7 @@ public sealed class PageCache : IDisposable
                 return page;
             }
 
-            var buffer = await pageLoader.ReadPageAsync(pageNumber, filters, cancellationToken).ConfigureAwait(false);
+            var buffer = await pageLoader.ReadPageAsync(pageOffsets[(int)pageNumber.Value], filters, cancellationToken).ConfigureAwait(false);
             if (TryPublish(pageNumber, buffer, out page))
             {
                 return page;
@@ -253,23 +267,25 @@ public sealed class PageCache : IDisposable
             Buffer = buffer,
             Frequency = 1,
             Tag = QueueTag.None,
-            // One reference for the map, one handed to the caller.
+            // One reference for the slot, one handed to the caller.
             RefCount = 2
         };
 
-        if (!map.TryAdd(pageNumber, entry))
+        var index = (int)pageNumber.Value;
+        if (Interlocked.CompareExchange(ref entries[index], entry, null) != null)
         {
             page = null!;
             return false;
         }
+        Interlocked.Increment(ref approxCount);
 
-        var inGhost = ghost.ContainsKey(pageNumber);
+        var inGhost = IsInGhost(index);
         entry.Tag = inGhost ? QueueTag.M : QueueTag.S;
 
         if (inGhost)
         {
             // Resurrected from Ghost -> to M Queue
-            ghost.TryRemove(pageNumber, out _);
+            Volatile.Write(ref ghostEpoch[index], 0);
             if (mQueue.TryEnqueue(entry))
             {
                 Interlocked.Increment(ref approxMSize);
@@ -285,13 +301,29 @@ public sealed class PageCache : IDisposable
         }
 
         // Try triggering an eviction if the capacity seems to be exceeded.
-        if (map.Count > capacity)
+        if (Volatile.Read(ref approxCount) > capacity)
         {
             TryStartEvict();
         }
 
         page = entry;
         return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    bool IsInGhost(int index)
+    {
+        var epoch = Volatile.Read(ref ghostEpoch[index]);
+        if (epoch == 0) return false;
+        // Unsigned difference keeps the comparison valid across clock wrap-around.
+        return (uint)(Volatile.Read(ref ghostClock) - epoch) < (uint)ghostWindow;
+    }
+
+    void RecordGhost(int index)
+    {
+        var epoch = Interlocked.Increment(ref ghostClock);
+        // 0 is the "never evicted" sentinel; skip it on wrap-around.
+        Volatile.Write(ref ghostEpoch[index], epoch == 0 ? 1 : epoch);
     }
 
     void TryStartEvict()
@@ -304,10 +336,10 @@ public sealed class PageCache : IDisposable
         {
             // Bounded pass: second-chance re-insertions count as progress, so under
             // heavy concurrent access a single pass could otherwise spin while readers
-            // keep refreshing frequencies. Leaving the map temporarily over capacity is
-            // fine — the next Load retries the eviction.
+            // keep refreshing frequencies. Leaving the cache temporarily over capacity
+            // is fine — the next Load retries the eviction.
             var attempts = capacity * 4;
-            while (map.Count > capacity && attempts-- > 0)
+            while (Volatile.Read(ref approxCount) > capacity && attempts-- > 0)
             {
                 // Stop when neither queue can make progress (e.g. entries raced out of
                 // the queues); otherwise this would spin forever.
@@ -334,10 +366,11 @@ public sealed class PageCache : IDisposable
     {
         while (sQueue.TryDequeue(out var e))
         {
-            // Skip if it's already removed from the map or moved to S.
-            if (!map.TryGetValue(e.PageNumber, out var current) ||
-                current != e ||
-                current.Tag != QueueTag.S)
+            var index = (int)e.PageNumber.Value;
+
+            // Skip if it's already removed from the slot or moved to M.
+            if (!ReferenceEquals(Volatile.Read(ref entries[index]), e) ||
+                e.Tag != QueueTag.S)
             {
                 continue;
             }
@@ -345,11 +378,11 @@ public sealed class PageCache : IDisposable
             Interlocked.Decrement(ref approxSSize);
 
             // If freq > 1, promote to M.
-            if (Volatile.Read(ref current.Frequency) > 1)
+            if (Volatile.Read(ref e.Frequency) > 1)
             {
-                current.Frequency = 0;
-                current.Tag = QueueTag.M;
-                if (mQueue.TryEnqueue(current))
+                e.Frequency = 0;
+                e.Tag = QueueTag.M;
+                if (mQueue.TryEnqueue(e))
                 {
                     Interlocked.Increment(ref approxMSize);
                 }
@@ -362,21 +395,13 @@ public sealed class PageCache : IDisposable
                 return true;
             }
 
-            // Send to ghost
-            if (map.TryRemove(current.PageNumber, out _))
+            // Evict and send to ghost
+            if (Interlocked.CompareExchange(ref entries[index], null, e) == e)
             {
-                current.Release();
+                Interlocked.Decrement(ref approxCount);
+                RecordGhost(index);
+                e.Release();
             }
-            if (ghost.Count > mTargetSize)
-            {
-                // Approximate by discarding one element
-                foreach (var k in ghost.Keys)
-                {
-                    ghost.TryRemove(k, out _);
-                    break;
-                }
-            }
-            ghost.TryAdd(current.PageNumber, 0);
             return true;
         }
 
@@ -387,29 +412,31 @@ public sealed class PageCache : IDisposable
     {
         while (mQueue.TryDequeue(out var e))
         {
-            if (!map.TryGetValue(e.PageNumber, out var current) ||
-                current != e ||
-                current.Tag != QueueTag.M)
+            var index = (int)e.PageNumber.Value;
+
+            if (!ReferenceEquals(Volatile.Read(ref entries[index]), e) ||
+                e.Tag != QueueTag.M)
             {
                 continue;
             }
 
             Interlocked.Decrement(ref approxMSize);
 
-            var f = Volatile.Read(ref current.Frequency);
+            var f = Volatile.Read(ref e.Frequency);
             if (f > 0)
             {
-                // Second chance: re-insert after increasing frequency
-                Interlocked.Decrement(ref current.Frequency);
-                if (mQueue.TryEnqueue(current))
+                // Second chance: re-insert after decreasing frequency
+                Interlocked.Decrement(ref e.Frequency);
+                if (mQueue.TryEnqueue(e))
                 {
                     Interlocked.Increment(ref approxMSize);
                 }
                 return true;
             }
             // Complete expulsion (not into ghosting here)
-            if (map.TryRemove(current.PageNumber, out _))
+            if (Interlocked.CompareExchange(ref entries[index], null, e) == e)
             {
+                Interlocked.Decrement(ref approxCount);
                 e.Release();
             }
             return true;

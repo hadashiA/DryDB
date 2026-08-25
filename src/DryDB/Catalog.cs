@@ -31,9 +31,15 @@ public class TableDescriptor(
 public class Catalog(
     int pageSize,
     IReadOnlyDictionary<string, TableDescriptor> tableDescriptors,
+    long[] pageOffsets,
     IReadOnlyList<IPageFilter>? filters = null)
 {
     public int PageSize => pageSize;
     public IReadOnlyList<IPageFilter>? Filters => filters;
     public IReadOnlyDictionary<string, TableDescriptor> TableDescriptors => tableDescriptors;
+
+    /// <summary>
+    /// The page directory: file offset of each page, indexed by page ordinal.
+    /// </summary>
+    public long[] PageOffsets => pageOffsets;
 }

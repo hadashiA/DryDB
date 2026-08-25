@@ -20,10 +20,12 @@ public class TreeBuilderTest
         };
 
         var memoryStream = new MemoryStream();
+        var pageDirectory = new PageDirectory();
         var buildResult = await TreeBuilder.BuildToAsync(
             memoryStream,
             128,
-            keyValues);
+            keyValues,
+            pageDirectory);
 
         var result = memoryStream.ToArray();
         var header = NodeHeader.Parse(result);
@@ -49,26 +51,28 @@ public class TreeBuilderTest
         };
 
         var memoryStream = new MemoryStream();
+        var pageDirectory = new PageDirectory();
         var buildResult = await TreeBuilder.BuildToAsync(
             memoryStream,
             128,
-            keyValues);
+            keyValues,
+            pageDirectory);
 
         var result = memoryStream.ToArray();
 
-        var header = NodeHeader.Parse(result.AsSpan((int)buildResult.RootPageNumber.Value));
+        var header = NodeHeader.Parse(result.AsSpan((int)pageDirectory.Offsets[(int)buildResult.RootPageNumber.Value]));
         Assert.That(header.NodeKind, Is.EqualTo(NodeKind.Internal));
         Assert.That(header.EntryCount, Is.EqualTo(3));
 
         var internalNode = new InternalNodeReader(
-            result.AsSpan((int)buildResult.RootPageNumber.Value), header.EntryCount, header.HasKeyDigests, header.HasEytzingerDigests);
+            result.AsSpan((int)pageDirectory.Offsets[(int)buildResult.RootPageNumber.Value]), header.EntryCount, header.HasKeyDigests, header.HasEytzingerDigests);
         internalNode.GetAt(0, out var internalKey1, out var childPosition1);
         internalNode.GetAt(1, out var internalKey2, out var childPosition2);
 
         Assert.That(internalKey1.SequenceEqual("key01"u8), Is.True);
         Assert.That(internalKey2.SequenceEqual("key04"u8), Is.True);
 
-        header = NodeHeader.Parse(result.AsSpan((int)childPosition1.Value));
+        header = NodeHeader.Parse(result.AsSpan((int)pageDirectory.Offsets[(int)childPosition1.Value]));
         Assert.That(header.NodeKind, Is.EqualTo(NodeKind.Leaf));
         Assert.That(header.EntryCount, Is.EqualTo(3));
         Assert.That(header.LeftSiblingPageNumber.IsEmpty, Is.True);

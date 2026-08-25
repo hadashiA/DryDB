@@ -60,7 +60,7 @@ namespace DryDB.Unity
         }
 
         public async ValueTask<IMemoryOwner<byte>> ReadPageAsync(
-            PageNumber pageNumber,
+            long position,
             IPageFilter[]? filters,
             CancellationToken cancellationToken = default)
         {
@@ -72,7 +72,7 @@ namespace DryDB.Unity
             {
                 var cmd = new ReadCommand
                 {
-                    Offset = pageNumber.Value,
+                    Offset = position,
                     Size = PageSize,
                     Buffer = (byte*)buffer.GetUnsafePtr()
                 };
@@ -101,12 +101,12 @@ namespace DryDB.Unity
             return new NativeArrayMemoryManager<byte>(buffer);
         }
 
-        public unsafe IMemoryOwner<byte> ReadPage(PageNumber pageNumber, IPageFilter[]? filters = null)
+        public unsafe IMemoryOwner<byte> ReadPage(long position, IPageFilter[]? filters = null)
         {
             var buffer = new NativeArray<byte>(PageSize, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             var cmd = new ReadCommand
             {
-                Offset = pageNumber.Value,
+                Offset = position,
                 Size = PageSize,
                 Buffer = (byte*)buffer.GetUnsafePtr()
             };

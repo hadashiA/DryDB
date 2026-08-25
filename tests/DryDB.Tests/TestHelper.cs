@@ -14,14 +14,16 @@ static class TestHelper
     public static async ValueTask<TreeWalker> BuildTreeAsync(KeyValueList keyValues, int pageSize)
     {
         var memoryStream = new MemoryStream();
+        var pageDirectory = new PageDirectory();
         var buildResult = await TreeBuilder.BuildToAsync(
             memoryStream,
             pageSize,
-            keyValues);
+            keyValues,
+            pageDirectory);
 
         var result = memoryStream.ToArray();
         var storage = new InMemoryPageLoader(result.ToArray());
-        var pageCache = new PageCache(storage, 8, []);
+        var pageCache = new PageCache(storage, pageDirectory.Offsets.ToArray(), 8, []);
         return TreeWalker.Create(buildResult.RootPageNumber, pageCache, KeyEncoding.Ascii);
     }
 

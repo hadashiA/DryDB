@@ -65,6 +65,7 @@ static class TreeBuilder
         Stream outStream,
         int pageSize,
         KeyValueList keyValues,
+        PageDirectory pageDirectory,
         IReadOnlyList<IPageFilter>? pageFilters = null,
         bool keyDigests = true,
         bool eytzingerDigests = false,
@@ -109,7 +110,7 @@ static class TreeBuilder
                 if (overflowNeeds > pageSize)
                 {
                     // Current page is full even for overflow; rotate
-                    await RotatePageAsync(outStream, nodes, 0, true, wroteValuePointers, digestEncoding, eytzinger, pageFilters, cancellationToken)
+                    await RotatePageAsync(outStream, pageDirectory, nodes, 0, true, wroteValuePointers, digestEncoding, eytzinger, pageFilters, cancellationToken)
                         .ConfigureAwait(false);
                     if (nodes[0].EntryCount <= 0)
                     {
@@ -144,7 +145,7 @@ static class TreeBuilder
             if (isOverflow)
             {
                 // Write blob page and store PageNumber.Value as inline payload
-                var blobPageNumber = await WriteBlobPageAsync(outStream, value, pageFilters, cancellationToken)
+                var blobPageNumber = await WriteBlobPageAsync(outStream, pageDirectory, value, pageFilters, cancellationToken)
                     .ConfigureAwait(false);
 
                 Unsafe.WriteUnaligned(
@@ -178,7 +179,7 @@ static class TreeBuilder
             {
                 if (nodes[level].EntryCount > 0)
                 {
-                    await RotatePageAsync(outStream, nodes, level, true, wroteValuePointers, digestEncoding, eytzinger, pageFilters, cancellationToken).ConfigureAwait(false);
+                    await RotatePageAsync(outStream, pageDirectory, nodes, level, true, wroteValuePointers, digestEncoding, eytzinger, pageFilters, cancellationToken).ConfigureAwait(false);
                     anyFlushed = true;
                 }
             }
@@ -188,7 +189,7 @@ static class TreeBuilder
         // Write the root (top level)
         if (nodes[^1].EntryCount > 0)
         {
-            await RotatePageAsync(outStream, nodes, nodes.Count - 1, false, wroteValuePointers, digestEncoding, eytzinger, pageFilters, cancellationToken).ConfigureAwait(false);
+            await RotatePageAsync(outStream, pageDirectory, nodes, nodes.Count - 1, false, wroteValuePointers, digestEncoding, eytzinger, pageFilters, cancellationToken).ConfigureAwait(false);
         }
 
         var rootPageNumber = nodes[^1].PrevNodeStartPageNumber; // latest root
@@ -201,11 +202,12 @@ static class TreeBuilder
 
     static async ValueTask<PageNumber> WriteBlobPageAsync(
         Stream outStream,
+        PageDirectory pageDirectory,
         ReadOnlyMemory<byte> value,
         IReadOnlyList<IPageFilter>? filters,
         CancellationToken cancellationToken)
     {
-        var blobPageNumber = new PageNumber(outStream.Position);
+        var blobPageNumber = pageDirectory.Add(outStream.Position);
         var pageLength = PageHeaderSize + value.Length;
 
         var buffer = ArrayPool<byte>.Shared.Rent(pageLength);
@@ -240,6 +242,7 @@ static class TreeBuilder
 
     static async ValueTask RotatePageAsync(
         Stream outStream,
+        PageDirectory pageDirectory,
         List<NodeEntry> nodeEntries,
         int level,
         bool promote,
@@ -250,7 +253,7 @@ static class TreeBuilder
         CancellationToken cancellationToken = default)
     {
         var currentNode = nodeEntries[level];
-        var currentPos = new PageNumber(outStream.Position);
+        var currentPos = pageDirectory.Add(outStream.Position);
 
         var kind = level == 0 ? NodeKind.Leaf : NodeKind.Internal;
         var nodeHeader = new NodeHeader
@@ -263,14 +266,18 @@ static class TreeBuilder
             RightSiblingPageNumber = PageNumber.Empty
         };
 
-        await FlushPageAsync(outStream, nodeHeader, currentNode, wroteValueRefs, digestEncoding, eytzinger, pageFilters, cancellationToken)
+        await FlushPageAsync(outStream, currentPos, nodeHeader, currentNode, wroteValueRefs, digestEncoding, eytzinger, pageFilters, cancellationToken)
             .ConfigureAwait(false);
 
         // Patch RightSiblingPosition
         if (!currentNode.PrevNodeStartPageNumber.IsEmpty)
         {
             var saved = outStream.Position;
-            outStream.Seek(currentNode.PrevNodeStartPageNumber.Value + RightSiblingPositionPageOffset, SeekOrigin.Begin);
+            // PrevNodeStartPageNumber is an ordinal; resolve its file offset through the
+            // directory to find the patch target. The value written is the ordinal.
+            outStream.Seek(
+                pageDirectory.Offsets[(int)currentNode.PrevNodeStartPageNumber.Value] + RightSiblingPositionPageOffset,
+                SeekOrigin.Begin);
             var buffer = ArrayPool<byte>.Shared.Rent(sizeof(long));
             try
             {
@@ -312,7 +319,7 @@ static class TreeBuilder
                     parent.KeyValueBufferOffset + sepKey.Length + sizeof(long);
         if (needs > parent.PageSize)
         {
-            await RotatePageAsync(outStream, nodeEntries, parentLevel, true, wroteValueRefs, digestEncoding, eytzinger, pageFilters, cancellationToken)
+            await RotatePageAsync(outStream, pageDirectory, nodeEntries, parentLevel, true, wroteValueRefs, digestEncoding, eytzinger, pageFilters, cancellationToken)
                 .ConfigureAwait(false);
             if (parent.EntryCount == 0) parent.FirstKey = sepKey; // first key of new page
         }
@@ -339,6 +346,7 @@ static class TreeBuilder
 
     static async ValueTask FlushPageAsync(
         Stream outStream,
+        PageNumber currentPageNumber,
         NodeHeader nodeHeader,
         NodeEntry node,
         List<PageRef> wroteValueRefs,
@@ -347,8 +355,6 @@ static class TreeBuilder
         IReadOnlyList<IPageFilter>? filters,
         CancellationToken cancellationToken = default)
     {
-        var currentPageNumber = new PageNumber(outStream.Position);
-
         var digestArea = DigestAreaSize(digestEncoding, eytzinger, node.EntryCount);
         var pageLength = PageHeaderSize +
                          digestArea +
