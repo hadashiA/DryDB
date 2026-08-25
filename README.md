@@ -7,7 +7,7 @@ DryDB is a read-only embedded B+Tree based key/value database, implemented pure 
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/benchmarks/point_lookup_dark.svg">
-  <img alt="Point lookup benchmark: DryDB 17 ns, RocksDB 383 ns, SQLite (prepared + immutable) 552 ns, SQLite (default) 4,287 ns per query" src="docs/benchmarks/point_lookup_light.svg">
+  <img alt="Point lookup benchmark: DryDB 15.5 ns, RocksDB 294 ns, SQLite (prepared + immutable) 673 ns, SQLite (default) 4,488 ns per query" src="docs/benchmarks/point_lookup_light.svg">
 </picture>
 
 See [Performance](#performance) for details.
@@ -57,21 +57,21 @@ Two SQLite configurations are shown to keep the comparison fair:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/benchmarks/point_lookup_dark.svg">
-  <img alt="Point lookup benchmark: DryDB 17 ns, RocksDB 383 ns, SQLite (prepared + immutable) 552 ns, SQLite (default) 4,287 ns per query" src="docs/benchmarks/point_lookup_light.svg">
+  <img alt="Point lookup benchmark: DryDB 15.5 ns, RocksDB 294 ns, SQLite (prepared + immutable) 673 ns, SQLite (default) 4,488 ns per query" src="docs/benchmarks/point_lookup_light.svg">
 </picture>
 
 ### Range scan
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/benchmarks/range_scan_dark.svg">
-  <img alt="Range scan benchmark (100 rows): DryDB 0.4 µs, SQLite (prepared + immutable) 5.7 µs, SQLite (default) 10 µs, RocksDB 10.1 µs per query" src="docs/benchmarks/range_scan_light.svg">
+  <img alt="Range scan benchmark (100 rows): DryDB 0.4 µs, SQLite (prepared + immutable) 6.2 µs, RocksDB 8.3 µs, SQLite (default) 10.7 µs per query" src="docs/benchmarks/range_scan_light.svg">
 </picture>
 
 ### Count by key range
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/benchmarks/count_range_dark.svg">
-  <img alt="Count benchmark (8,000 rows): DryDB 1.0 µs, SQLite (prepared + immutable) 102 µs, SQLite (default) 110 µs, RocksDB 713 µs per query" src="docs/benchmarks/count_range_light.svg">
+  <img alt="Count benchmark (8,000 rows): DryDB 0.8 µs, SQLite (prepared + immutable) 88 µs, SQLite (default) 94 µs, RocksDB 565 µs per query" src="docs/benchmarks/count_range_light.svg">
 </picture>
 
 <details>
@@ -81,27 +81,27 @@ Each benchmark class is measured in its own run. 1 op = 1000 queries for point l
 
 | Type             | Method                              | Mean         | Error        | StdDev       | Allocated  |
 |----------------- |------------------------------------ |-------------:|-------------:|-------------:|-----------:|
-| ReadBenchmark    | DryDB_FindByKey                     |     17.06 us |     0.329 us |     0.196 us |          - |
-| ReadBenchmark    | DryDB_FindByKeyAsync                |     20.18 us |     0.132 us |     0.078 us |          - |
-| ReadBenchmark    | DryDB_FindByKey_RandomKeys          |     30.85 us |     0.285 us |     0.169 us |          - |
-| ReadBenchmark    | DryDB_FindByKey_RandomKeys_NoRepeat |     65.87 us |     0.348 us |     0.182 us |          - |
-| ReadBenchmark    | DryDB_FindByKey_ParallelSpread      |    129.88 us |     1.874 us |     1.115 us |     1551 B |
-| ReadBenchmark    | DryDB_FindByKey_Parallel            |    613.26 us |     4.271 us |     2.541 us |     1296 B |
-| ReadBenchmark    | RocksDB_FindByKey                   |    383.24 us |     4.271 us |     2.825 us |    40032 B |
-| ReadBenchmark    | CsSqlite_FindByKey_Fair             |    552.49 us |     5.611 us |     3.712 us |    48000 B |
-| ReadBenchmark    | CsSqlite_FindByKey                  |  4,286.52 us |    70.881 us |    42.180 us |    48000 B |
-| RangeBenchmark   | DryDB_GetRange                      |     44.72 us |     0.725 us |     0.479 us |          - |
-| RangeBenchmark   | CsSqlite_GetRange_Fair              |    574.20 us |    21.034 us |    12.517 us |   480000 B |
-| RangeBenchmark   | CsSqlite_GetRange                   |  1,001.08 us |     9.494 us |     6.279 us |   480000 B |
-| RangeBenchmark   | RocksDB_GetRange                    |  1,012.93 us |    44.708 us |    26.605 us |   726432 B |
-| CountBenchmark   | DryDB_CountRange                    |    104.80 us |     3.180 us |     1.890 us |          - |
-| CountBenchmark   | CsSqlite_CountRange_Fair            | 10,216.20 us |   252.840 us |   167.240 us |          - |
-| CountBenchmark   | CsSqlite_CountRange                 | 11,014.20 us |   461.740 us |   305.410 us |          - |
-| CountBenchmark   | RocksDB_CountRange                  | 71,326.60 us | 1,521.980 us |   905.710 us | 25606432 B |
-| OpenBenchmark    | DryDB_OpenAndFirstRead              |    175.50 us |    15.630 us |    10.340 us |   652820 B |
-| BigReadBenchmark | DryDB_FindByKey_1M                  |     56.27 us |     5.436 us |     3.235 us |          - |
-| BigReadBenchmark | DryDB_FindByKey_1M_RandomKeys       |     98.11 us |     3.163 us |     1.654 us |          - |
-| BigReadBenchmark | DryDB_GetRange_1M                   |     61.41 us |     5.439 us |     3.597 us |          - |
+| ReadBenchmark    | DryDB_FindByKey                     |     15.53 us |     0.199 us |     0.131 us |          - |
+| ReadBenchmark    | DryDB_FindByKeyAsync                |     17.25 us |     0.311 us |     0.162 us |          - |
+| ReadBenchmark    | DryDB_FindByKey_RandomKeys          |     22.48 us |     0.608 us |     0.362 us |          - |
+| ReadBenchmark    | DryDB_FindByKey_RandomKeys_NoRepeat |     52.93 us |     0.162 us |     0.085 us |          - |
+| ReadBenchmark    | DryDB_FindByKey_ParallelSpread      |    117.78 us |     9.375 us |     5.579 us |     1548 B |
+| ReadBenchmark    | DryDB_FindByKey_Parallel            |    707.37 us |    20.335 us |    13.450 us |     1296 B |
+| ReadBenchmark    | RocksDB_FindByKey                   |    293.92 us |     5.680 us |     2.971 us |    40032 B |
+| ReadBenchmark    | CsSqlite_FindByKey_Fair             |    673.05 us |   154.563 us |    91.978 us |    48000 B |
+| ReadBenchmark    | CsSqlite_FindByKey                  |  4,487.65 us |   203.048 us |   120.830 us |    48000 B |
+| RangeBenchmark   | DryDB_GetRange                      |     44.31 us |     0.679 us |     0.449 us |          - |
+| RangeBenchmark   | CsSqlite_GetRange_Fair              |    616.79 us |    33.609 us |    20.000 us |   480000 B |
+| RangeBenchmark   | RocksDB_GetRange                    |    829.64 us |    25.522 us |    16.881 us |   726432 B |
+| RangeBenchmark   | CsSqlite_GetRange                   |  1,070.22 us |     8.154 us |     5.393 us |   480000 B |
+| CountBenchmark   | DryDB_CountRange                    |     81.24 us |     6.392 us |     4.228 us |          - |
+| CountBenchmark   | CsSqlite_CountRange_Fair            |  8,758.48 us |   490.772 us |   292.051 us |          - |
+| CountBenchmark   | CsSqlite_CountRange                 |  9,427.71 us | 1,166.270 us |   771.416 us |          - |
+| CountBenchmark   | RocksDB_CountRange                  | 56,454.88 us | 2,231.991 us | 1,167.374 us | 25606432 B |
+| OpenBenchmark    | DryDB_OpenAndFirstRead              |     33.15 us |     0.846 us |     0.503 us |    19128 B |
+| BigReadBenchmark | DryDB_FindByKey_1M                  |     27.38 us |     0.945 us |     0.625 us |          - |
+| BigReadBenchmark | DryDB_FindByKey_1M_RandomKeys       |     63.16 us |     3.593 us |     1.879 us |          - |
+| BigReadBenchmark | DryDB_GetRange_1M                   |     54.30 us |     8.045 us |     4.208 us |          - |
 
 </details>
 
