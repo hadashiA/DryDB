@@ -20,10 +20,10 @@ VALUES = {
         "subtitle": "Find one value by key, 10,000 rows — time per query (lower is better)",
         "aria": "Point lookup benchmark",
         "rows": [
-            ("DryDB", 15.5, "15.5 ns", True, False),
-            ("RocksDB", 294, "294 ns", False, False),
-            ("SQLite (CsSqlite, prepared + immutable)", 673, "673 ns", False, False),
-            ("SQLite (CsSqlite, default)", 4488, "4,488 ns", False, True),
+            ("DryDB", 17, "17 ns", True, False),
+            ("RocksDB", 383, "383 ns", False, False),
+            ("SQLite (CsSqlite, prepared + immutable)", 552, "552 ns", False, False),
+            ("SQLite (CsSqlite, default)", 4287, "4,287 ns", False, True),
         ],
     },
     "range_scan": {
@@ -31,10 +31,10 @@ VALUES = {
         "subtitle": "Read 100 consecutive rows by key range — time per query (lower is better)",
         "aria": "Range scan benchmark",
         "rows": [
-            ("DryDB", 0.44, "0.4 µs", True, False),
-            ("SQLite (CsSqlite, prepared + immutable)", 6.2, "6.2 µs", False, False),
-            ("RocksDB", 8.3, "8.3 µs", False, False),
-            ("SQLite (CsSqlite, default)", 10.7, "10.7 µs", False, False),
+            ("DryDB", 0.45, "0.4 µs", True, False),
+            ("SQLite (CsSqlite, prepared + immutable)", 5.7, "5.7 µs", False, False),
+            ("SQLite (CsSqlite, default)", 10.0, "10 µs", False, False),
+            ("RocksDB", 10.1, "10.1 µs", False, False),
         ],
     },
     "count_range": {
@@ -42,10 +42,10 @@ VALUES = {
         "subtitle": "Count 8,000 rows in a key range — time per query (lower is better)",
         "aria": "Count by key range benchmark",
         "rows": [
-            ("DryDB", 0.8, "0.8 µs", True, False),
-            ("SQLite (CsSqlite, prepared + immutable)", 88, "88 µs", False, False),
-            ("SQLite (CsSqlite, default)", 94, "94 µs", False, False),
-            ("RocksDB", 565, "565 µs", False, True),
+            ("DryDB", 1.0, "1.0 µs", True, False),
+            ("SQLite (CsSqlite, prepared + immutable)", 102, "102 µs", False, False),
+            ("SQLite (CsSqlite, default)", 110, "110 µs", False, False),
+            ("RocksDB", 713, "713 µs", False, True),
         ],
     },
 }
