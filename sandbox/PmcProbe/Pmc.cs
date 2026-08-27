@@ -13,6 +13,12 @@ static unsafe class Pmc
 
     static readonly nuint[] map = new nuint[Events.Length];
 
+    // True when kpep assigned event i to physical counter slot i for every event.
+    // The kernel fills the read buffer in physical-slot order, so under an identity
+    // map a PmcCounters value (whose explicit layout pins field i to slot i) can be
+    // handed to kpc_get_thread_counters directly, with no scratch buffer or permute.
+    static bool directRead;
+
     public static void Init()
     {
         Check(Kpc.kpep_db_create(null, out var db), "kpep_db_create");
@@ -44,16 +50,40 @@ static unsafe class Pmc
         Check(Kpc.kpc_set_config(classes, regs), "kpc_set_config");
         Check(Kpc.kpc_set_counting(classes), "kpc_set_counting");
         Check(Kpc.kpc_set_thread_counting(classes), "kpc_set_thread_counting");
+
+        var identity = true;
+        for (var i = 0; i < map.Length; i++)
+        {
+            identity &= map[i] == (nuint)i;
+        }
+        if (identity)
+        {
+            // Probe once: some kernels may reject a buffer shorter than the enabled
+            // counter set, in which case we keep the permuted path.
+            var probe = default(PmcCounters);
+            directRead = Kpc.kpc_get_thread_counters(0, PmcCounters.EventCount, (ulong*)&probe) == 0;
+        }
+        Console.Error.WriteLine(directRead
+            ? "kpep map is identity: reading straight into PmcCounters"
+            : $"kpep map [{string.Join(", ", map)}]: using the permuted read path");
     }
 
     /// <summary>Reads the calling thread's counters into one <see cref="PmcCounters"/> sample.</summary>
     public static PmcCounters Read()
     {
-        var buf = stackalloc ulong[Kpc.MaxCounters];
-        var ret = Kpc.kpc_get_thread_counters(0, Kpc.MaxCounters, buf);
-        if (ret != 0) throw new Exception($"kpc_get_thread_counters failed: {ret}");
-
         var values = default(PmcCounters);
+        if (directRead)
+        {
+            // Physical slot order == event order (verified in Init), so the struct
+            // itself is the kernel's buffer.
+            var ret = Kpc.kpc_get_thread_counters(0, PmcCounters.EventCount, (ulong*)&values);
+            if (ret != 0) throw new Exception($"kpc_get_thread_counters failed: {ret}");
+            return values;
+        }
+
+        var buf = stackalloc ulong[Kpc.MaxCounters];
+        var ret2 = Kpc.kpc_get_thread_counters(0, Kpc.MaxCounters, buf);
+        if (ret2 != 0) throw new Exception($"kpc_get_thread_counters failed: {ret2}");
         for (var i = 0; i < PmcCounters.EventCount; i++)
         {
             values[i] = buf[map[i]];
