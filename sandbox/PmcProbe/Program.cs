@@ -57,11 +57,8 @@ void MeasureAll((string Layout, ReadOnlyDatabase Db)[] dbs)
 {
     string[] patterns = { "fixed", "repeat1000", "norepeat" };
 
-    Console.WriteLine("| layout | keys | ns/op | cyc/op | inst/op | branch/op | cond/op | miss/op | condMiss/op | condMiss% |");
-    Console.WriteLine("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|");
-
-    var before = new ulong[Pmc.EventCount];
-    var after = new ulong[Pmc.EventCount];
+    Console.WriteLine($"| layout | keys | ns/op | {PmcCounters.MarkdownHeader} |");
+    Console.WriteLine($"|---|---|---:|{PmcCounters.MarkdownSeparator}|");
 
     foreach (var (layout, db) in dbs)
     {
@@ -78,24 +75,20 @@ void MeasureAll((string Layout, ReadOnlyDatabase Db)[] dbs)
             GC.Collect();
             var gc0 = GC.CollectionCount(0);
 
-            Pmc.Read(before);
+            var before = Pmc.Read();
             var sw = Stopwatch.StartNew();
             for (var m = 0; m < MeasureBatches; m++)
             {
                 seed = RunBatch(table, p, seed);
             }
             sw.Stop();
-            Pmc.Read(after);
+            var delta = Pmc.Read() - before;
 
             if (GC.CollectionCount(0) != gc0) Console.Error.WriteLine($"warning: GC ran during {layout}/{patterns[p]}");
 
             var ops = (double)MeasureBatches * Iterations;
-            var missPct = 100.0 * (after[5] - before[5]) / (after[3] - before[3]);
             Console.WriteLine(
-                $"| {layout} | {patterns[p]} | {sw.Elapsed.TotalNanoseconds / ops:F1} | {Delta(0):F1} | {Delta(1):F1} | " +
-                $"{Delta(2):F1} | {Delta(3):F1} | {Delta(4):F2} | {Delta(5):F2} | {missPct:F1}% |");
-
-            double Delta(int i) => (after[i] - before[i]) / ops;
+                $"| {layout} | {patterns[p]} | {sw.Elapsed.TotalNanoseconds / ops:F1} | {delta.ToMarkdownCells(ops)} |");
         }
     }
 }

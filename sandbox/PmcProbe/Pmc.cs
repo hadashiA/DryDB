@@ -9,17 +9,7 @@ using System.Text;
 
 static unsafe class Pmc
 {
-    static readonly string[] Events =
-    {
-        "FIXED_CYCLES",                  // 0
-        "FIXED_INSTRUCTIONS",            // 1
-        "INST_BRANCH",                   // 2
-        "INST_BRANCH_COND",              // 3
-        "BRANCH_MISPRED_NONSPEC",        // 4  (_NONSPEC = retired only, no speculation noise)
-        "BRANCH_COND_MISPRED_NONSPEC",   // 5
-    };
-
-    public static int EventCount => Events.Length;
+    static readonly string[] Events = PmcCounters.EventNames;
 
     static readonly nuint[] map = new nuint[Events.Length];
 
@@ -56,16 +46,19 @@ static unsafe class Pmc
         Check(Kpc.kpc_set_thread_counting(classes), "kpc_set_thread_counting");
     }
 
-    /// <summary>Reads the calling thread's counters for <see cref="Events"/>, in order.</summary>
-    public static void Read(ulong[] values) // values.Length == EventCount
+    /// <summary>Reads the calling thread's counters into one <see cref="PmcCounters"/> sample.</summary>
+    public static PmcCounters Read()
     {
         var buf = stackalloc ulong[Kpc.MaxCounters];
         var ret = Kpc.kpc_get_thread_counters(0, Kpc.MaxCounters, buf);
         if (ret != 0) throw new Exception($"kpc_get_thread_counters failed: {ret}");
-        for (var i = 0; i < values.Length; i++)
+
+        var values = default(PmcCounters);
+        for (var i = 0; i < PmcCounters.EventCount; i++)
         {
             values[i] = buf[map[i]];
         }
+        return values;
     }
 
     static void Check(int ret, string what)
