@@ -45,7 +45,7 @@ jobs:
         path: ./publish
     - name: Publish
       if: github.event.inputs.dry-run == 'false'
-      run: dotnet nuget push ./publish/*.nupkg -s 'https://api.nuget.org/v3/index.json' -k ${{secrets.NUGET_API_KEY}}
+      run: dotnet nuget push ./publish/*.nupkg --skip-duplicate -s 'https://api.nuget.org/v3/index.json' -k ${{secrets.NUGET_API_KEY}}
       
   create-release:
     if: github.event.inputs.dry-run == 'false'    
