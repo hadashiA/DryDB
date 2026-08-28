@@ -16,17 +16,17 @@ public class InMemoryPageLoader(Memory<byte> memory) : IPageLoader
     }
 
     public ValueTask<IMemoryOwner<byte>> ReadPageAsync(
-        PageNumber pageNumber,
+        long position,
         IPageFilter[]? filters,
         CancellationToken cancellationToken = default)
     {
         var pageLength = Unsafe.ReadUnaligned<int>(
             ref Unsafe.Add(
                 ref MemoryMarshal.GetReference(memory.Span),
-                (int)pageNumber.Value));
+                (int)position));
 
         var destination = MemoryPool<byte>.Shared.Rent(pageLength);
-        memory.Slice((int)pageNumber.Value, pageLength).CopyTo(destination.Memory);
+        memory.Slice((int)position, pageLength).CopyTo(destination.Memory);
 
         if (filters is { Length: > 0 })
         {
@@ -45,16 +45,16 @@ public class InMemoryPageLoader(Memory<byte> memory) : IPageLoader
         return new ValueTask<IMemoryOwner<byte>>(destination);
     }
 
-    public IMemoryOwner<byte> ReadPage(PageNumber pageNumber, IPageFilter[]? filters)
+    public IMemoryOwner<byte> ReadPage(long position, IPageFilter[]? filters)
     {
         var pageLength = Unsafe.ReadUnaligned<int>(
             ref Unsafe.Add(
                 ref MemoryMarshal.GetReference(memory.Span),
-                (int)pageNumber.Value));
+                (int)position));
 
         var destination = MemoryPool<byte>.Shared.Rent(pageLength);
 
-        memory.Span.Slice((int)pageNumber.Value, pageLength)
+        memory.Span.Slice((int)position, pageLength)
             .CopyTo(destination.Memory.Span);
 
         if (filters is { Length: > 0 })

@@ -142,7 +142,6 @@ public class DatabaseBuilder : IDisposable
     /// speeds up key searches (~20-30% for cache-resident reads) at the cost of 8 bytes
     /// per entry of file size. Encodings without digest support (e.g. UUIDv7 or custom
     /// encodings) always use the plain layout regardless of this setting.
-    /// Disable to produce files byte-compatible with DryDB 1.0 readers.
     /// </summary>
     public bool KeyDigests { get; set; } = true;
 
@@ -150,9 +149,8 @@ public class DatabaseBuilder : IDisposable
     /// Store each node's key digest array as a MaxValue-padded complete binary tree in
     /// Eytzinger (BFS) order instead of sorted order, which makes the digest search a
     /// branch-free descent whose top levels share a cache line. Costs up to 2x the
-    /// digest area (padding to 2^k - 1 slots) and produces format 1.2 files, which
-    /// readers older than 1.2 cannot parse. No effect unless <see cref="KeyDigests"/>
-    /// is enabled and the encoding supports digests.
+    /// digest area (padding to 2^k - 1 slots). No effect unless
+    /// <see cref="KeyDigests"/> is enabled and the encoding supports digests.
     /// </summary>
     public bool EytzingerDigests { get; set; } = false;
 
@@ -193,12 +191,13 @@ public class DatabaseBuilder : IDisposable
             Header.MagicBytesValue.CopyTo(new Span<byte>(header.MagicBytes, Header.MagicBytesValue.Length));
         }
         header.MajorVersion = 1;
-        // 1.1: B+Tree nodes may carry per-entry key digest arrays (flagged per page in
-        // the node header's kind field). 1.0 readers cannot parse such pages, so files
-        // built with KeyDigests disabled stay marked (and byte-compatible) as 1.0.
-        // 1.2: the digest array may be Eytzinger-ordered (a second per-page flag);
-        // 1.1 readers cannot parse such pages.
-        header.MinorVersion = (byte)(KeyDigests ? (EytzingerDigests ? 2 : 1) : 0);
+        // 1.3: every on-disk page pointer (roots, siblings, children, blob refs,
+        // secondary-index PageRefs) is a dense page ordinal instead of a file offset,
+        // and a page directory section (ordinal -> offset) sits at the end of the
+        // file. Readers older than 1.3 cannot parse these files; this builder always
+        // writes 1.3. Key digests (1.1) and Eytzinger digest layout (1.2) remain
+        // per-page flags in the node header, orthogonal to the pointer format.
+        header.MinorVersion = Header.SupportedMinorVersion;
         header.PageFilterCount = (ushort)(filterOptions?.Filters.Count ?? 0);
         header.PageSize = PageSize;
         header.TableCount = (ushort)tableBuilders.Count;
@@ -222,6 +221,7 @@ public class DatabaseBuilder : IDisposable
             indexDescriptorEndPositionsList.Add(positions);
         }
 
+        var pageDirectory = new BTree.PageDirectory();
         for (var i = 0; i < tableBuilders.Count; i++)
         {
             await DryDBCodec.BuildTreeAsync(
@@ -229,12 +229,17 @@ public class DatabaseBuilder : IDisposable
                 PageSize,
                 tableOptions[i],
                 tableBuilders[i].KeyValues,
+                pageDirectory,
                 filterOptions?.Filters,
                 indexDescriptorEndPositionsList[i],
                 KeyDigests,
                 EytzingerDigests,
                 cancellationToken);
         }
+
+        // Write the page directory (ordinal -> file offset) after the last page, then
+        // back-patch its position and the page count into the header.
+        await DryDBCodec.WritePageDirectoryAsync(stream, pageDirectory, cancellationToken);
 
         await stream.FlushAsync(cancellationToken);
     }

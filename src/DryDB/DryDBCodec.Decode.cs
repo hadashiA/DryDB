@@ -11,13 +11,21 @@ using System.Threading.Tasks;
 
 namespace DryDB;
 
+// Format 1.3. Every page pointer in the file (index root, node siblings, internal
+// node children, overflow blob refs, secondary-index PageRefs) is a dense page
+// ordinal assigned in flush order; the page directory section at the end of the
+// file maps ordinal -> byte offset. Readers translate through the directory only
+// when loading a page; the page cache is indexed directly by ordinal.
+//
 // Header
 //   magic_bytes(4): "DRY\0"
 //   major_version(1): byte
 //   minor_version(1): byte
 //   page_filter_count(2): ushort
 //   page_size(4): int
-//   table_count(2): int
+//   table_count(2): ushort
+//   page_count(4): int            (back-patched)
+//   page_directory_position(8): long  (back-patched)
 //
 //   PageFilter[0]
 //     name_length(1): byte
@@ -33,7 +41,7 @@ namespace DryDB;
 //       key_encoding_id(name_length): utf8
 //       is_unique(1): bool
 //       value_kind(1): enum
-//       root_position(8): long
+//       root_ordinal(8): long
 //     index_count(2): ushort
 //     Index[1](Secondary Key):
 //       ...
@@ -43,12 +51,21 @@ namespace DryDB;
 // Page[0]
 //   page_length(4): int
 //   payload...
+//
+// PageDirectory (at page_directory_position)
+//   offset[page_count](8 each): long
 
 // NOTE: little endian only
-[StructLayout(LayoutKind.Explicit)]
+[StructLayout(LayoutKind.Explicit, Size = 26)]
 unsafe struct Header
 {
     public static ReadOnlySpan<byte> MagicBytesValue => "DRY\0"u8;
+
+    public const byte SupportedMajorVersion = 1;
+    public const byte SupportedMinorVersion = 3;
+
+    /// <summary>Byte offsets of the back-patched fields (see WritePageDirectoryAsync).</summary>
+    public const int PageCountFieldOffset = 14;
 
     [FieldOffset(0)]
     public fixed byte MagicBytes[4];
@@ -67,6 +84,12 @@ unsafe struct Header
 
     [FieldOffset(12)]
     public ushort TableCount;
+
+    [FieldOffset(14)]
+    public int PageCount;
+
+    [FieldOffset(18)]
+    public long PageDirectoryPosition;
 
     public bool ValidateMagicBytes()
     {
@@ -100,6 +123,14 @@ static partial class DryDBCodec
             if (!header.ValidateMagicBytes())
             {
                 throw new StorageFormatException("Invalid magic bytes");
+            }
+            if (header.MajorVersion != Header.SupportedMajorVersion ||
+                header.MinorVersion != Header.SupportedMinorVersion)
+            {
+                throw new StorageFormatException(
+                    $"Unsupported storage format version {header.MajorVersion}.{header.MinorVersion}: " +
+                    $"this reader supports {Header.SupportedMajorVersion}.{Header.SupportedMinorVersion} only. " +
+                    "Rebuild the file with the current DatabaseBuilder.");
             }
         }
         finally
@@ -141,7 +172,29 @@ static partial class DryDBCodec
             }
         }
 
-        return new Catalog(header.PageSize, tableDescriptors, filters);
+        // read the page directory (ordinal -> file offset)
+        if (header.PageCount < 0 || header.PageDirectoryPosition <= 0)
+        {
+            throw new StorageFormatException("Invalid page directory header fields");
+        }
+        var pageOffsets = new long[header.PageCount];
+        stream.Seek(header.PageDirectoryPosition, SeekOrigin.Begin);
+        var directoryBytes = header.PageCount * sizeof(long);
+        buffer = ArrayPool<byte>.Shared.Rent(directoryBytes);
+        try
+        {
+            await stream.ReadAtLeastAsync(buffer.AsMemory(0, directoryBytes), directoryBytes, cancellationToken: cancellationToken);
+            for (var i = 0; i < header.PageCount; i++)
+            {
+                pageOffsets[i] = BinaryPrimitives.ReadInt64LittleEndian(buffer.AsSpan(i * sizeof(long)));
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+
+        return new Catalog(header.PageSize, tableDescriptors, pageOffsets, filters);
     }
 
     static async ValueTask<TableDescriptor> ParseTableDescriptorAsync(Stream stream, CancellationToken cancellationToken)

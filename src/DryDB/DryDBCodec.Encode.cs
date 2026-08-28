@@ -141,11 +141,48 @@ static partial class DryDBCodec
         await stream.WriteAsync(buffer.AsMemory(0, descriptorLength), cancellationToken);
     }
 
+    /// <summary>
+    /// Writes the page directory section (page_count x 8-byte little-endian file
+    /// offsets, indexed by ordinal) at the current stream position, then back-patches
+    /// the header's page_count and page_directory_position fields.
+    /// </summary>
+    public static async ValueTask WritePageDirectoryAsync(
+        Stream stream,
+        BTree.PageDirectory pageDirectory,
+        CancellationToken cancellationToken = default)
+    {
+        var offsets = pageDirectory.Offsets;
+        var directoryPosition = stream.Position;
+
+        var buffer = ArrayPool<byte>.Shared.Rent(offsets.Count * sizeof(long));
+        try
+        {
+            for (var i = 0; i < offsets.Count; i++)
+            {
+                BinaryPrimitives.WriteInt64LittleEndian(buffer.AsSpan(i * sizeof(long)), offsets[i]);
+            }
+            await stream.WriteAsync(buffer.AsMemory(0, offsets.Count * sizeof(long)), cancellationToken);
+
+            // back-patch the header
+            var end = stream.Position;
+            stream.Seek(Header.PageCountFieldOffset, SeekOrigin.Begin);
+            BinaryPrimitives.WriteInt32LittleEndian(buffer, offsets.Count);
+            BinaryPrimitives.WriteInt64LittleEndian(buffer.AsSpan(sizeof(int)), directoryPosition);
+            await stream.WriteAsync(buffer.AsMemory(0, sizeof(int) + sizeof(long)), cancellationToken);
+            stream.Seek(end, SeekOrigin.Begin);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
     public static async ValueTask BuildTreeAsync(
         Stream stream,
         int pageSize,
         TableOptions tableOptions,
         KeyValueList keyValues,
+        BTree.PageDirectory pageDirectory,
         IReadOnlyList<IPageFilter>? pageFilters,
         long[] indexDescriptorEndPositions,
         bool keyDigests = true,
@@ -157,6 +194,7 @@ static partial class DryDBCodec
             stream,
             pageSize,
             keyValues,
+            pageDirectory,
             pageFilters,
             keyDigests,
             eytzingerDigests,
@@ -185,7 +223,7 @@ static partial class DryDBCodec
             }
 
             // write secondary key tree
-            var secondaryKeyResult = await TreeBuilder.BuildToAsync(stream, pageSize, secondaryKeyValues, pageFilters, keyDigests, eytzingerDigests, cancellationToken);
+            var secondaryKeyResult = await TreeBuilder.BuildToAsync(stream, pageSize, secondaryKeyValues, pageDirectory, pageFilters, keyDigests, eytzingerDigests, cancellationToken);
 
             // write secondary tree root position
             Span<byte> positionBuffer2 = stackalloc byte[sizeof(long)];
