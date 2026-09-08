@@ -138,20 +138,21 @@ public class DatabaseBuilder : IDisposable
     public int PageSize { get; set; } = 4096;
 
     /// <summary>
-    /// Store an order-preserving 8-byte digest per entry in every B+Tree node, which
-    /// speeds up key searches (~20-30% for cache-resident reads) at the cost of 8 bytes
-    /// per entry of file size. Encodings without digest support (e.g. UUIDv7 or custom
-    /// encodings) always use the plain layout regardless of this setting.
-    /// </summary>
-    public bool KeyDigests { get; set; } = true;
-
-    /// <summary>
     /// Store each node's key digest array as a MaxValue-padded complete binary tree in
     /// Eytzinger (BFS) order instead of sorted order, which makes the digest search a
     /// branch-free descent whose top levels share a cache line. Costs up to 2x the
-    /// digest area (padding to 2^k - 1 slots). No effect unless
-    /// <see cref="KeyDigests"/> is enabled and the encoding supports digests.
+    /// digest area (padding to 2^k - 1 slots), and exact-digest encodings keep their
+    /// key bytes on the page (no OmittedKeys). No effect unless the encoding supports
+    /// digests.
     /// </summary>
+    /// <remarks>
+    /// Key digests themselves are not optional: every encoding with
+    /// <see cref="IKeyEncoding.SupportsKeyDigest"/> gets a digest array per node —
+    /// for exact digests it doubles as the key column and makes entries smaller than
+    /// the digest-less layout would be. An encoding whose keys collide badly in the
+    /// first 8 bytes (long shared prefixes) can opt out by declaring
+    /// <c>SupportsKeyDigest =&gt; false</c>.
+    /// </remarks>
     public bool EytzingerDigests { get; set; } = false;
 
     readonly MemoryArena arena = new();
@@ -235,7 +236,6 @@ public class DatabaseBuilder : IDisposable
                 pageDirectory,
                 filterOptions?.Filters,
                 indexDescriptorEndPositionsList[i],
-                KeyDigests,
                 EytzingerDigests,
                 cancellationToken);
         }

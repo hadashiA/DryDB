@@ -1,7 +1,7 @@
 // PMU probe for DryDB lookups on Apple Silicon.
 // Reads per-thread performance counters (cycles, instructions, branches,
 // branch mispredicts) around the same lookup loops as ReadBenchmark, for
-// three node layouts x three key patterns.
+// two node layouts x three key patterns.
 //
 // PMU access lives in Kpc.cs (P/Invoke surface) and Pmc.cs (event setup / reads);
 // requires root — see README.md in this directory.
@@ -20,9 +20,14 @@ try
 {
     var dbs = new (string Layout, ReadOnlyDatabase Db)[]
     {
-        ("sorted+simd", await BuildAsync(Path.Combine(dir.FullName, "sorted.drydb"), eytzinger: false, digests: true)),
-        ("eytzinger", await BuildAsync(Path.Combine(dir.FullName, "eytz.drydb"), eytzinger: true, digests: true)),
-        ("no-digest", await BuildAsync(Path.Combine(dir.FullName, "nodig.drydb"), eytzinger: false, digests: false)),
+        // No "no-digest" row since format 1.4: digests are no longer a builder
+        // option, and faking it with a digest-less custom encoding would swap the
+        // devirtualized Int64 comparer for the interface-dispatch fallback,
+        // contaminating exactly the comparison this row existed for. The historical
+        // digest-contribution numbers were measured against 1.3.
+        ("sorted+simd", await BuildAsync(Path.Combine(dir.FullName, "sorted.drydb"), eytzinger: false)),
+        ("eytzinger", await BuildAsync(Path.Combine(dir.FullName, "eytz.drydb"), eytzinger: true)),
+
     };
 
     Pmc.Init();
@@ -39,9 +44,9 @@ return;
 
 // ---------------------------------------------------------------- local functions
 
-async Task<ReadOnlyDatabase> BuildAsync(string path, bool eytzinger, bool digests)
+async Task<ReadOnlyDatabase> BuildAsync(string path, bool eytzinger)
 {
-    using (var builder = new DatabaseBuilder { PageSize = 4096, KeyDigests = digests, EytzingerDigests = eytzinger })
+    using (var builder = new DatabaseBuilder { PageSize = 4096, EytzingerDigests = eytzinger })
     {
         var t = builder.CreateTable("items", KeyEncoding.Int64LittleEndian);
         for (var i = 0; i < N; i++)

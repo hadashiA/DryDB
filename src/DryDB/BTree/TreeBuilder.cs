@@ -106,7 +106,6 @@ static class TreeBuilder
         KeyValueList keyValues,
         PageDirectory pageDirectory,
         IReadOnlyList<IPageFilter>? pageFilters = null,
-        bool keyDigests = true,
         bool eytzingerDigests = false,
         CancellationToken cancellationToken = default)
     {
@@ -117,10 +116,11 @@ static class TreeBuilder
 
         var wroteValuePointers = new List<PageRef>(keyValues.Count);
 
-        // When enabled and the encoding provides order-preserving digests, every node
-        // carries a contiguous 8-byte digest per entry, searched instead of the
-        // scattered keys.
-        var digestEncoding = keyDigests && keyValues.KeyEncoding.SupportsKeyDigest
+        // When the encoding provides order-preserving digests, every node carries a
+        // contiguous 8-byte digest per entry, searched instead of the scattered keys.
+        // Encodings can opt out via SupportsKeyDigest (e.g. keys whose first 8 bytes
+        // collide badly).
+        var digestEncoding = keyValues.KeyEncoding.SupportsKeyDigest
             ? keyValues.KeyEncoding
             : null;
         var eytzinger = eytzingerDigests && digestEncoding != null;

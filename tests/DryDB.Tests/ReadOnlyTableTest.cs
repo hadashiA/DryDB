@@ -90,17 +90,14 @@ public class ReadOnlyTableTest
     }
 
     [Test]
-    public async Task Get_KeyDigestsDisabled()
+    public async Task Get_EncodingWithoutDigestSupport()
     {
-        // KeyDigests = false produces the 1.0 page layout; readers detect the absence
-        // of the per-page flag and use the plain search path.
+        // Digests are not a builder option: an encoding opts out by declaring
+        // SupportsKeyDigest => false, which produces pages without a digest area.
+        // Readers detect the absent per-page flag and use the plain search path.
         var table = await TestHelper.BuildTableAsync(
-            KeyEncoding.Ascii,
-            databaseConfigure: builder =>
-            {
-                builder.PageSize = 128;
-                builder.KeyDigests = false;
-            },
+            NoDigestAsciiEncoding.Registered,
+            databaseConfigure: builder => builder.PageSize = 128,
             tableConfigure: builder =>
             {
                 for (var i = 0; i < 300; i++)
@@ -666,4 +663,41 @@ public class ReadOnlyTableTest
         Assert.That(result[1].Span.SequenceEqual("value01"u8), Is.True);
         Assert.That(result[2].Span.SequenceEqual("value00"u8), Is.True);
     }
+}
+
+/// <summary>
+/// ASCII encoding that opts out of key digests (the escape hatch for keys whose
+/// first 8 bytes collide badly). Registered so the reader can resolve it by id.
+/// </summary>
+sealed class NoDigestAsciiEncoding : IKeyEncoding
+{
+    public static readonly NoDigestAsciiEncoding Registered = Register();
+
+    static NoDigestAsciiEncoding Register()
+    {
+        var encoding = new NoDigestAsciiEncoding();
+        KeyEncoding.Register(encoding);
+        return encoding;
+    }
+
+    public string Id => "test-ascii-nodigest";
+
+    public int Compare(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b) =>
+        AsciiOrdinalEncoding.Instance.Compare(a, b);
+
+    public int Compare(ReadOnlyMemory<byte> a, ReadOnlyMemory<byte> b) =>
+        Compare(a.Span, b.Span);
+
+    public int GetMaxEncodedByteCount<TKey>(TKey key) where TKey : IComparable<TKey> =>
+        AsciiOrdinalEncoding.Instance.GetMaxEncodedByteCount(key);
+
+    public bool TryEncode<TKey>(TKey key, Span<byte> destination, out int bytesWritten)
+        where TKey : IComparable<TKey> =>
+        AsciiOrdinalEncoding.Instance.TryEncode(key, destination, out bytesWritten);
+
+    public bool TryEncode(string formattedString, Span<byte> destination, out int bytesWritten) =>
+        AsciiOrdinalEncoding.Instance.TryEncode(formattedString, destination, out bytesWritten);
+
+    public bool TryFormat(ReadOnlySpan<byte> key, Span<byte> destination, out int bytesWritten) =>
+        AsciiOrdinalEncoding.Instance.TryFormat(key, destination, out bytesWritten);
 }
