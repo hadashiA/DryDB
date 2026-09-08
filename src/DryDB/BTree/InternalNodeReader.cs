@@ -264,11 +264,12 @@ readonly ref struct InternalNodeReader
         }
 
         // Compact layout: ushort offsets[entryCount + 1]; each entry's payload is
-        // key + 8-byte child ordinal, so the key length is derived.
-        var offset = Unsafe.ReadUnaligned<ushort>(
+        // key + 8-byte child ordinal, so the key length is derived. offset[i] and
+        // offset[i+1] are adjacent, so one 4-byte load covers both (little endian).
+        var offsetPair = Unsafe.ReadUnaligned<uint>(
             ref Unsafe.Add(ref pageReference, metaBase + index * sizeof(ushort)));
-        var nextOffset = Unsafe.ReadUnaligned<ushort>(
-            ref Unsafe.Add(ref pageReference, metaBase + (index + 1) * sizeof(ushort)));
+        var offset = (ushort)offsetPair;
+        var nextOffset = (ushort)(offsetPair >> 16);
 
         return new NodeEntryMeta
         {

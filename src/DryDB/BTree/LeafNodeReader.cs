@@ -554,11 +554,12 @@ readonly ref struct LeafNodeReader
         }
 
         // Compact layout: ushort offsets[entryCount + 1] (bit 15 = overflow), then, on
-        // pages that store keys, ushort keyLengths[entryCount].
-        var rawOffset = Unsafe.ReadUnaligned<ushort>(
+        // pages that store keys, ushort keyLengths[entryCount]. offset[i] and
+        // offset[i+1] are adjacent, so one 4-byte load covers both (little endian).
+        var offsetPair = Unsafe.ReadUnaligned<uint>(
             ref Unsafe.Add(ref pageReference, metaBase + index * sizeof(ushort)));
-        var nextOffset = Unsafe.ReadUnaligned<ushort>(
-            ref Unsafe.Add(ref pageReference, metaBase + (index + 1) * sizeof(ushort)));
+        var rawOffset = (ushort)offsetPair;
+        var nextOffset = (ushort)(offsetPair >> 16);
 
         var offset = rawOffset & CompactOffsetMask;
         var keyLength = omittedKeys
