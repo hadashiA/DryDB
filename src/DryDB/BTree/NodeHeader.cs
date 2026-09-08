@@ -16,17 +16,14 @@ static class NodeFlags
     // per-page format flags. Old files have no flags set and keep the old layout.
     public const int KindMask = 0xFF;
 
-    /// <summary>
-    /// A contiguous array of 8-byte key digests sits between the node header and the
-    /// entry metadata.
-    /// </summary>
-    public const int HasKeyDigests = 1 << 8;
+    // Bit 8 was HasKeyDigests in formats 1.1-1.3. Since 1.4 every tree page carries
+    // a digest array (digests are mandatory), so the bit is no longer written and the
+    // reader rejects pre-1.4 files.
 
     /// <summary>
     /// The digest array is stored as a complete binary tree in Eytzinger (BFS) order,
     /// padded with <see cref="ulong.MaxValue"/> to 2^k - 1 slots, instead of sorted
-    /// order. Only valid together with <see cref="HasKeyDigests"/>. Introduced in
-    /// format 1.2.
+    /// order. Introduced in format 1.2.
     /// </summary>
     public const int EytzingerDigests = 1 << 9;
 
@@ -37,7 +34,7 @@ static class NodeFlags
     /// [offset[i], offset[i+1]) and every length is derived from adjacent offsets,
     /// the final slot closing the last entry. Bit 15 of a leaf offset marks the entry
     /// as an overflow value (its inline payload is the 8-byte blob page ordinal),
-    /// which is why this layout requires pageSize &lt;= 32768; the builder keeps the
+    /// which is why this layout requires pageSize &lt;= 32767; the builder keeps the
     /// classic meta records for larger pages. Leaf pages that store keys append
     /// <c>ushort key_length[entry_count]</c> after the offsets. Internal pages never
     /// need key lengths (payload per entry is key + 8-byte child ordinal, so the key
@@ -51,10 +48,10 @@ static class NodeFlags
     /// digest array is then a bijective image of the keys, so it replaces every key
     /// comparison (equal digest = equal key) and reconstructs key bytes via
     /// <see cref="IKeyEncoding.TryDecodeKeyFromDigest"/>. Always combined with
-    /// <see cref="HasKeyDigests"/> and <see cref="CompactMeta"/>, never with
-    /// <see cref="EytzingerDigests"/> (enumeration needs the digest of the i-th entry
-    /// in sorted order). Internal pages drop their meta area entirely: the payload is
-    /// a dense array of 8-byte child ordinals.
+    /// <see cref="CompactMeta"/>, never with <see cref="EytzingerDigests"/>
+    /// (enumeration needs the digest of the i-th entry in sorted order). Internal
+    /// pages drop their meta area entirely: the payload is a dense array of 8-byte
+    /// child ordinals.
     /// </summary>
     public const int OmittedKeys = 1 << 11;
 }
@@ -87,12 +84,6 @@ unsafe struct NodeHeader
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         get => (NodeKind)((int)Kind & NodeFlags.KindMask);
-    }
-
-    public bool HasKeyDigests
-    {
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        get => ((int)Kind & NodeFlags.HasKeyDigests) != 0;
     }
 
     public bool HasEytzingerDigests

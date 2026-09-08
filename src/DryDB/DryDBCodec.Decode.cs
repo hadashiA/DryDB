@@ -18,11 +18,13 @@ namespace DryDB;
 // directory only when loading a page; the page cache is indexed directly by
 // ordinal.
 //
-// 1.4 adds two per-page layout flags in the node header's kind field (see
-// NodeFlags): CompactMeta (entry metadata as a ushort offset array with derived
-// lengths) and OmittedKeys (exact-digest trees store no key bytes; the digest
-// array doubles as the key column). Both are page-level, so this reader also
-// accepts 1.3 files unchanged.
+// 1.4 makes key digests mandatory (every tree page carries a digest array; the
+// former HasKeyDigests page flag is retired) and adds two per-page layout flags
+// in the node header's kind field (see NodeFlags): CompactMeta (entry metadata
+// as a ushort offset array with derived lengths) and OmittedKeys (exact-digest
+// trees store no key bytes; the digest array doubles as the key column).
+// Because readers now assume the digest area, pre-1.4 files (which may lack it)
+// are rejected.
 //
 // Header
 //   magic_bytes(4): "DRY\0"
@@ -70,12 +72,6 @@ unsafe struct Header
 
     public const byte SupportedMajorVersion = 1;
     public const byte SupportedMinorVersion = 4;
-
-    /// <summary>
-    /// Oldest minor version this reader still accepts. 1.4 only added page-level
-    /// layout flags, so 1.3 files parse unchanged.
-    /// </summary>
-    public const byte MinSupportedMinorVersion = 3;
 
     /// <summary>Byte offsets of the back-patched fields (see WritePageDirectoryAsync).</summary>
     public const int PageCountFieldOffset = 14;
@@ -138,13 +134,11 @@ static partial class DryDBCodec
                 throw new StorageFormatException("Invalid magic bytes");
             }
             if (header.MajorVersion != Header.SupportedMajorVersion ||
-                header.MinorVersion < Header.MinSupportedMinorVersion ||
-                header.MinorVersion > Header.SupportedMinorVersion)
+                header.MinorVersion != Header.SupportedMinorVersion)
             {
                 throw new StorageFormatException(
                     $"Unsupported storage format version {header.MajorVersion}.{header.MinorVersion}: " +
-                    $"this reader supports {Header.SupportedMajorVersion}.{Header.MinSupportedMinorVersion}" +
-                    $"-{Header.SupportedMajorVersion}.{Header.SupportedMinorVersion} only. " +
+                    $"this reader supports {Header.SupportedMajorVersion}.{Header.SupportedMinorVersion} only. " +
                     "Rebuild the file with the current DatabaseBuilder.");
             }
         }

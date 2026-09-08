@@ -9,9 +9,8 @@ namespace DryDB.BTree;
 /// <summary>
 /// Tree walker specialized per key comparer. TComparer is constrained to a struct so
 /// the runtime generates one instantiation per comparer type: every
-/// <c>comparer.Compare</c> in the search loops is a direct, inlinable call, and
-/// <c>comparer.SupportsKeyDigest</c> folds to a constant (see
-/// <see cref="IKeyComparer"/>).
+/// <c>comparer.Compare</c> and <c>comparer.GetKeyDigest</c> in the search loops is a
+/// direct, inlinable call (see <see cref="IKeyComparer"/>).
 /// </summary>
 sealed class TreeWalker<TComparer> : TreeWalker
     where TComparer : struct, IKeyComparer
@@ -30,21 +29,18 @@ sealed class TreeWalker<TComparer> : TreeWalker
         this.comparer = comparer;
     }
 
+    /// <summary>
+    /// Digest of a search key. Bound keys may be empty (unbound range ends, which
+    /// never reach a node search); everything else goes through the comparer's
+    /// mandatory order-preserving digest.
+    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    bool TryGetKeyDigest(scoped ReadOnlySpan<byte> key, out ulong digest)
-    {
-        if (comparer.SupportsKeyDigest && key.Length > 0)
-        {
-            digest = comparer.GetKeyDigest(key);
-            return true;
-        }
-        digest = 0;
-        return false;
-    }
+    ulong DigestOf(scoped ReadOnlySpan<byte> key) =>
+        key.IsEmpty ? 0 : comparer.GetKeyDigest(key);
 
     public override SingleValueResult Get(ReadOnlySpan<byte> key)
     {
-        var hasKeyDigest = TryGetKeyDigest(key, out var keyDigest);
+        var keyDigest = DigestOf(key);
         var pageNumber = RootPageNumber;
         while (true)
         {
@@ -54,7 +50,7 @@ sealed class TreeWalker<TComparer> : TreeWalker
             if (header.NodeKind == NodeKind.Internal)
             {
                 var internalNode = new InternalNodeReader(pageSpan, header);
-                var descended = internalNode.TrySearch(key, comparer, keyDigest, hasKeyDigest, out pageNumber);
+                var descended = internalNode.TrySearch(key, comparer, keyDigest, out pageNumber);
                 lease.Release();
                 if (!descended)
                 {
@@ -64,7 +60,7 @@ sealed class TreeWalker<TComparer> : TreeWalker
             else // Leaf
             {
                 var leafNode = new LeafNodeReader(pageSpan, header);
-                if (leafNode.TryFindValue(key, comparer, keyDigest, hasKeyDigest, out _, out var valueOffset, out var valueLength))
+                if (leafNode.TryFindValue(key, comparer, keyDigest, out _, out var valueOffset, out var valueLength))
                 {
                     if (LeafNodeReader.IsOverflow(valueLength))
                     {
@@ -96,7 +92,7 @@ sealed class TreeWalker<TComparer> : TreeWalker
 
     internal override bool TryGetFromCache(scoped ReadOnlySpan<byte> key, out SingleValueResult result)
     {
-        var hasKeyDigest = TryGetKeyDigest(key, out var keyDigest);
+        var keyDigest = DigestOf(key);
         var pageNumber = RootPageNumber;
         while (true)
         {
@@ -111,7 +107,7 @@ sealed class TreeWalker<TComparer> : TreeWalker
             if (header.NodeKind == NodeKind.Internal)
             {
                 var descended = new InternalNodeReader(pageSpan, header)
-                    .TrySearch(key, comparer, keyDigest, hasKeyDigest, out pageNumber);
+                    .TrySearch(key, comparer, keyDigest, out pageNumber);
                 lease.Release();
                 if (!descended)
                 {
@@ -122,7 +118,7 @@ sealed class TreeWalker<TComparer> : TreeWalker
             else // Leaf
             {
                 var leafNode = new LeafNodeReader(pageSpan, header);
-                if (leafNode.TryFindValue(key, comparer, keyDigest, hasKeyDigest, out _, out var valueOffset, out var valueLength))
+                if (leafNode.TryFindValue(key, comparer, keyDigest, out _, out var valueOffset, out var valueLength))
                 {
                     if (LeafNodeReader.IsOverflow(valueLength))
                     {
@@ -152,7 +148,7 @@ sealed class TreeWalker<TComparer> : TreeWalker
         ReadOnlyMemory<byte> key,
         CancellationToken cancellationToken)
     {
-        var hasKeyDigest = TryGetKeyDigest(key.Span, out var keyDigest);
+        var keyDigest = DigestOf(key.Span);
         var pageNumber = RootPageNumber;
         while (true)
         {
@@ -161,7 +157,7 @@ sealed class TreeWalker<TComparer> : TreeWalker
             if (header.NodeKind == NodeKind.Internal)
             {
                 var descended = new InternalNodeReader(lease.Page.Memory.Span, header)
-                    .TrySearch(key.Span, comparer, keyDigest, hasKeyDigest, out pageNumber);
+                    .TrySearch(key.Span, comparer, keyDigest, out pageNumber);
                 lease.Release();
                 if (!descended)
                 {
@@ -171,7 +167,7 @@ sealed class TreeWalker<TComparer> : TreeWalker
             else // Leaf
             {
                 if (new LeafNodeReader(lease.Page.Memory.Span, header)
-                    .TryFindValue(key.Span, comparer, keyDigest, hasKeyDigest, out _, out var valueOffset, out var valueLength))
+                    .TryFindValue(key.Span, comparer, keyDigest, out _, out var valueOffset, out var valueLength))
                 {
                     if (LeafNodeReader.IsOverflow(valueLength))
                     {
@@ -195,7 +191,7 @@ sealed class TreeWalker<TComparer> : TreeWalker
         out IPageEntry page,
         out int index)
     {
-        var hasKeyDigest = TryGetKeyDigest(key, out var keyDigest);
+        var keyDigest = DigestOf(key);
         var pageNumber = RootPageNumber;
         while (true)
         {
@@ -205,7 +201,7 @@ sealed class TreeWalker<TComparer> : TreeWalker
             if (header.NodeKind == NodeKind.Internal)
             {
                 var internalNode = new InternalNodeReader(pageSpan, header);
-                var descended = internalNode.TrySearch(key, comparer, keyDigest, hasKeyDigest, out pageNumber);
+                var descended = internalNode.TrySearch(key, comparer, keyDigest, out pageNumber);
                 lease.Release();
                 if (!descended)
                 {
@@ -217,7 +213,7 @@ sealed class TreeWalker<TComparer> : TreeWalker
             else // Leaf
             {
                 var leafNode = new LeafNodeReader(pageSpan, header);
-                if (leafNode.TrySearch(key, op, comparer, keyDigest, hasKeyDigest, out index))
+                if (leafNode.TrySearch(key, op, comparer, keyDigest, out index))
                 {
                     page = lease.Take();
                     return true;
@@ -248,7 +244,7 @@ sealed class TreeWalker<TComparer> : TreeWalker
         SearchOperator op,
         CancellationToken cancellationToken)
     {
-        var hasKeyDigest = TryGetKeyDigest(key.Span, out var keyDigest);
+        var keyDigest = DigestOf(key.Span);
         var pageNumber = RootPageNumber;
         while (true)
         {
@@ -257,7 +253,7 @@ sealed class TreeWalker<TComparer> : TreeWalker
             if (header.NodeKind == NodeKind.Internal)
             {
                 var descended = new InternalNodeReader(lease.Page.Memory.Span, header)
-                    .TrySearch(key.Span, comparer, keyDigest, hasKeyDigest, out pageNumber);
+                    .TrySearch(key.Span, comparer, keyDigest, out pageNumber);
                 lease.Release();
                 if (!descended)
                 {
@@ -267,7 +263,7 @@ sealed class TreeWalker<TComparer> : TreeWalker
             else // Leaf
             {
                 if (new LeafNodeReader(lease.Page.Memory.Span, header)
-                    .TrySearch(key.Span, op, comparer, keyDigest, hasKeyDigest, out var index))
+                    .TrySearch(key.Span, op, comparer, keyDigest, out var index))
                 {
                     return (lease.Take(), index);
                 }
@@ -333,7 +329,7 @@ sealed class TreeWalker<TComparer> : TreeWalker
             return RangeResult.Empty;
         }
 
-        var hasEndKeyDigest = TryGetKeyDigest(endKey, out var endKeyDigest);
+        var endKeyDigest = DigestOf(endKey);
         var result = RangeResult.Rent();
 
         while (true)
@@ -357,7 +353,7 @@ sealed class TreeWalker<TComparer> : TreeWalker
                 if (!endKey.IsEmpty)
                 {
                     var op = endKeyExclusive ? SearchOperator.LowerBound : SearchOperator.UpperBound;
-                    if (leafNode.TrySearch(endKey, op, comparer, endKeyDigest, hasEndKeyDigest, out var boundIndex))
+                    if (leafNode.TrySearch(endKey, op, comparer, endKeyDigest, out var boundIndex))
                     {
                         stopIndex = boundIndex;
                         endsInThisLeaf = true;
@@ -411,7 +407,7 @@ sealed class TreeWalker<TComparer> : TreeWalker
 
         var page = start.Value.Page;
         var entryIndex = start.Value.EntryIndex;
-        var hasStartKeyDigest = TryGetKeyDigest(startKey, out var startKeyDigest);
+        var startKeyDigest = DigestOf(startKey);
         var result = RangeResult.Rent();
 
         while (true)
@@ -434,7 +430,7 @@ sealed class TreeWalker<TComparer> : TreeWalker
                 if (!startKey.IsEmpty)
                 {
                     var op = startKeyExclusive ? SearchOperator.UpperBound : SearchOperator.LowerBound;
-                    if (!leafNode.TrySearch(startKey, op, comparer, startKeyDigest, hasStartKeyDigest, out boundIndex))
+                    if (!leafNode.TrySearch(startKey, op, comparer, startKeyDigest, out boundIndex))
                     {
                         // Everything in (and left of) this leaf is below the start bound.
                         return result;
@@ -523,7 +519,7 @@ sealed class TreeWalker<TComparer> : TreeWalker
             page = startPage;
         }
 
-        var hasEndKeyDigest = TryGetKeyDigest(endKey.Span, out var endKeyDigest);
+        var endKeyDigest = DigestOf(endKey.Span);
         var result = RangeResult.Rent();
 
         while (true)
@@ -545,7 +541,7 @@ sealed class TreeWalker<TComparer> : TreeWalker
                 {
                     var op = endKeyExclusive ? SearchOperator.LowerBound : SearchOperator.UpperBound;
                     if (new LeafNodeReader(currentPage.Memory.Span, header)
-                        .TrySearch(endKey.Span, op, comparer, endKeyDigest, hasEndKeyDigest, out var boundIndex))
+                        .TrySearch(endKey.Span, op, comparer, endKeyDigest, out var boundIndex))
                     {
                         stopIndex = boundIndex;
                         endsInThisLeaf = true;
@@ -606,7 +602,7 @@ sealed class TreeWalker<TComparer> : TreeWalker
 
         var page = start.Value.Page;
         var entryIndex = start.Value.EntryIndex;
-        var hasStartKeyDigest = TryGetKeyDigest(startKey.Span, out var startKeyDigest);
+        var startKeyDigest = DigestOf(startKey.Span);
         var result = RangeResult.Rent();
 
         while (true)
@@ -627,7 +623,7 @@ sealed class TreeWalker<TComparer> : TreeWalker
                 {
                     var op = startKeyExclusive ? SearchOperator.UpperBound : SearchOperator.LowerBound;
                     if (!new LeafNodeReader(currentPage.Memory.Span, header)
-                        .TrySearch(startKey.Span, op, comparer, startKeyDigest, hasStartKeyDigest, out boundIndex))
+                        .TrySearch(startKey.Span, op, comparer, startKeyDigest, out boundIndex))
                     {
                         // Everything in (and left of) this leaf is below the start bound.
                         return result;
@@ -704,7 +700,7 @@ sealed class TreeWalker<TComparer> : TreeWalker
             return 0;
         }
 
-        var hasEndKeyDigest = TryGetKeyDigest(endKey, out var endKeyDigest);
+        var endKeyDigest = DigestOf(endKey);
 
         var count = 0;
 
@@ -729,7 +725,7 @@ sealed class TreeWalker<TComparer> : TreeWalker
                 {
                     var leafNode = new LeafNodeReader(pageSpan, header);
                     var op = endKeyExclusive ? SearchOperator.LowerBound : SearchOperator.UpperBound;
-                    if (leafNode.TrySearch(endKey, op, comparer, endKeyDigest, hasEndKeyDigest, out var boundIndex))
+                    if (leafNode.TrySearch(endKey, op, comparer, endKeyDigest, out var boundIndex))
                     {
                         // The range ends inside this leaf.
                         return count + Math.Max(0, boundIndex - entryIndex);
@@ -789,7 +785,7 @@ sealed class TreeWalker<TComparer> : TreeWalker
             page = startPage;
         }
 
-        var hasEndKeyDigest = TryGetKeyDigest(endKey.Span, out var endKeyDigest);
+        var endKeyDigest = DigestOf(endKey.Span);
 
         var count = 0;
 
@@ -814,7 +810,7 @@ sealed class TreeWalker<TComparer> : TreeWalker
                 {
                     var leafNode = new LeafNodeReader(pageSpan, header);
                     var op = endKeyExclusive ? SearchOperator.LowerBound : SearchOperator.UpperBound;
-                    if (leafNode.TrySearch(endKey.Span, op, comparer, endKeyDigest, hasEndKeyDigest, out var boundIndex))
+                    if (leafNode.TrySearch(endKey.Span, op, comparer, endKeyDigest, out var boundIndex))
                     {
                         // The range ends inside this leaf.
                         return count + Math.Max(0, boundIndex - entryIndex);

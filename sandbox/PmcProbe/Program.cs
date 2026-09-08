@@ -20,11 +20,9 @@ try
 {
     var dbs = new (string Layout, ReadOnlyDatabase Db)[]
     {
-        // No "no-digest" row since format 1.4: digests are no longer a builder
-        // option, and faking it with a digest-less custom encoding would swap the
-        // devirtualized Int64 comparer for the interface-dispatch fallback,
-        // contaminating exactly the comparison this row existed for. The historical
-        // digest-contribution numbers were measured against 1.3.
+        // No "no-digest" row since format 1.4: digests are mandatory (a digest-less
+        // page layout no longer exists). The historical digest-contribution numbers
+        // were measured against 1.3.
         ("sorted+simd", await BuildAsync(Path.Combine(dir.FullName, "sorted.drydb"), eytzinger: false)),
         ("eytzinger", await BuildAsync(Path.Combine(dir.FullName, "eytz.drydb"), eytzinger: true)),
 

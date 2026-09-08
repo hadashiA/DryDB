@@ -51,16 +51,15 @@ sealed class TreeBuildResult
 /// Per-tree layout decisions and the size arithmetic they imply. See
 /// <see cref="NodeFlags"/> for the on-disk shapes.
 /// </summary>
-readonly struct NodeLayout(IKeyEncoding? digestEncoding, bool eytzinger, bool compactMeta, bool omitKeys)
+readonly struct NodeLayout(IKeyEncoding digestEncoding, bool eytzinger, bool compactMeta, bool omitKeys)
 {
-    public IKeyEncoding? DigestEncoding => digestEncoding;
+    public IKeyEncoding DigestEncoding => digestEncoding;
     public bool Eytzinger => eytzinger;
     public bool CompactMeta => compactMeta;
     public bool OmitKeys => omitKeys;
 
     public int Flags =>
-        (digestEncoding != null ? NodeFlags.HasKeyDigests : 0)
-        | (eytzinger ? NodeFlags.EytzingerDigests : 0)
+        (eytzinger ? NodeFlags.EytzingerDigests : 0)
         | (compactMeta ? NodeFlags.CompactMeta : 0)
         | (omitKeys ? NodeFlags.OmittedKeys : 0);
 
@@ -69,11 +68,8 @@ readonly struct NodeLayout(IKeyEncoding? digestEncoding, bool eytzinger, bool co
     /// entries: one slot per entry in sorted order, or a MaxValue-padded complete tree
     /// (2^k - 1 slots) in Eytzinger order.
     /// </summary>
-    public int DigestAreaSize(int entryCount)
-    {
-        if (digestEncoding == null) return 0;
-        return (eytzinger ? EytzingerLayout.CompleteSize(entryCount) : entryCount) * sizeof(ulong);
-    }
+    public int DigestAreaSize(int entryCount) =>
+        (eytzinger ? EytzingerLayout.CompleteSize(entryCount) : entryCount) * sizeof(ulong);
 
     public int LeafMetaSize(int entryCount) => compactMeta
         ? (entryCount + 1 + (omitKeys ? 0 : entryCount)) * sizeof(ushort)
@@ -116,18 +112,14 @@ static class TreeBuilder
 
         var wroteValuePointers = new List<PageRef>(keyValues.Count);
 
-        // When the encoding provides order-preserving digests, every node carries a
-        // contiguous 8-byte digest per entry, searched instead of the scattered keys.
-        // Encodings can opt out via SupportsKeyDigest (e.g. keys whose first 8 bytes
-        // collide badly).
-        var digestEncoding = keyValues.KeyEncoding.SupportsKeyDigest
-            ? keyValues.KeyEncoding
-            : null;
-        var eytzinger = eytzingerDigests && digestEncoding != null;
+        // Every node carries a contiguous 8-byte order-preserving digest per entry,
+        // searched instead of the scattered keys (digests are mandatory as of 1.4).
+        var digestEncoding = keyValues.KeyEncoding;
+        var eytzinger = eytzingerDigests;
         var compactMeta = pageSize <= MaxCompactPageSize;
         // Exact digests are a bijective image of the keys: skip storing the key bytes
         // entirely (never with Eytzinger — enumeration needs sorted-order digests).
-        var omitKeys = compactMeta && !eytzinger && digestEncoding is { IsKeyDigestExact: true };
+        var omitKeys = compactMeta && !eytzinger && digestEncoding.IsKeyDigestExact;
         var layout = new NodeLayout(digestEncoding, eytzinger, compactMeta, omitKeys);
 
         var nodes = new List<NodeEntry> { new(pageSize) };
@@ -181,10 +173,7 @@ static class TreeBuilder
                 isOverflow = true;
             }
 
-            if (digestEncoding != null)
-            {
-                leaf.Digests.Add(digestEncoding.GetKeyDigest(key.Span));
-            }
+            leaf.Digests.Add(digestEncoding.GetKeyDigest(key.Span));
 
             // Copy key into buffer (skipped when the digest replaces the key)
             if (!layout.OmitKeys)
@@ -375,10 +364,7 @@ static class TreeBuilder
             if (parent.EntryCount == 0) parent.FirstKey = sepKey; // first key of new page
         }
 
-        if (layout.DigestEncoding != null)
-        {
-            parent.Digests.Add(layout.DigestEncoding.GetKeyDigest(sepKey.Span));
-        }
+        parent.Digests.Add(layout.DigestEncoding.GetKeyDigest(sepKey.Span));
 
         ref var parentKeyValueBufferReference = ref Unsafe.Add(
                 ref GetArrayDataReference(parent.KeyValueBuffer),
@@ -433,7 +419,6 @@ static class TreeBuilder
         ptr = ref Unsafe.Add(ref ptr, Unsafe.SizeOf<NodeHeader>());
 
         // write key digests (computed when the entries were appended)
-        if (layout.DigestEncoding != null)
         {
             var digests = ArrayPool<ulong>.Shared.Rent(node.EntryCount);
             node.Digests.CopyTo(digests);

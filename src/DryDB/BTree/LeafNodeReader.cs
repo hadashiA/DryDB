@@ -51,7 +51,6 @@ readonly ref struct LeafNodeReader
 #endif
     readonly int entryCount;
     readonly int metaBase;
-    readonly bool hasKeyDigests;
     readonly bool hasEytzingerDigests;
     readonly bool compactMeta;
     readonly bool omittedKeys;
@@ -64,13 +63,12 @@ readonly ref struct LeafNodeReader
         pageReference = ref MemoryMarshal.GetReference(page);
 #endif
         entryCount = header.EntryCount;
-        hasKeyDigests = header.HasKeyDigests;
         hasEytzingerDigests = header.HasEytzingerDigests;
         compactMeta = header.HasCompactMeta;
         omittedKeys = header.HasOmittedKeys;
-        metaBase = DigestBase + (hasKeyDigests
-            ? (hasEytzingerDigests ? EytzingerLayout.CompleteSize(entryCount) : entryCount) * sizeof(ulong)
-            : 0);
+        // Every tree page carries a digest array (format 1.4: digests are mandatory).
+        metaBase = DigestBase +
+            (hasEytzingerDigests ? EytzingerLayout.CompleteSize(entryCount) : entryCount) * sizeof(ulong);
     }
 
     /// <summary>
@@ -121,7 +119,6 @@ readonly ref struct LeafNodeReader
         scoped ReadOnlySpan<byte> key,
         TComparer comparer,
         ulong keyDigest,
-        bool hasKeyDigest,
         out int index,
         out int valueOffset,
         out ushort valueLength)
@@ -130,9 +127,7 @@ readonly ref struct LeafNodeReader
 #if NETSTANDARD
         ref var pageReference = ref MemoryMarshal.GetReference(page);
 #endif
-        if (omittedKeys && !hasKeyDigest) ThrowOmittedKeysNeedDigest();
-
-        if (hasEytzingerDigests && hasKeyDigest)
+        if (hasEytzingerDigests)
         {
             // Branch-free descent yields the rank of the first entry whose digest is
             // >= keyDigest; entries below the rank are < key. A match can only sit in
@@ -160,8 +155,7 @@ readonly ref struct LeafNodeReader
             return false;
         }
 
-        var useDigest = hasKeyDigests && hasKeyDigest;
-        if (useDigest && DigestSearch.IsAccelerated)
+        if (DigestSearch.IsAccelerated)
         {
             // Branch-free lower bound over the digest array; a match can only sit in
             // the run of digests equal to keyDigest, which starts at the bound.
@@ -199,21 +193,13 @@ readonly ref struct LeafNodeReader
         {
             var midIndex = min + ((max - min) >> 1);
 
-            int compared;
-            if (useDigest)
-            {
-                // One contiguous load instead of dereferencing the variable-length key;
-                // only digest ties fall back to the full comparison.
-                var digest = Unsafe.ReadUnaligned<ulong>(
-                    ref Unsafe.Add(ref pageReference, DigestBase + midIndex * sizeof(ulong)));
-                compared = digest != keyDigest
-                    ? (digest < keyDigest ? -1 : 1)
-                    : CompareEntry(ref pageReference, midIndex, key, keyDigest, comparer);
-            }
-            else
-            {
-                compared = CompareEntry(ref pageReference, midIndex, key, keyDigest, comparer);
-            }
+            // One contiguous load instead of dereferencing the variable-length key;
+            // only digest ties fall back to the full comparison.
+            var digest = Unsafe.ReadUnaligned<ulong>(
+                ref Unsafe.Add(ref pageReference, DigestBase + midIndex * sizeof(ulong)));
+            var compared = digest != keyDigest
+                ? (digest < keyDigest ? -1 : 1)
+                : CompareEntry(ref pageReference, midIndex, key, keyDigest, comparer);
 
             if (compared == 0)
             {
@@ -244,16 +230,13 @@ readonly ref struct LeafNodeReader
         SearchOperator op,
         TComparer comparer,
         ulong keyDigest,
-        bool hasKeyDigest,
         out int index)
         where TComparer : struct, IKeyComparer
     {
 #if  NETSTANDARD
         ref var pageReference = ref MemoryMarshal.GetReference(page);
 #endif
-        if (omittedKeys && !hasKeyDigest) ThrowOmittedKeysNeedDigest();
-
-        if (hasEytzingerDigests && hasKeyDigest)
+        if (hasEytzingerDigests)
         {
             // Branch-free descent to the rank of the first entry with digest >=
             // keyDigest, then resolve the bound inside the run of equal digests with
@@ -306,8 +289,7 @@ readonly ref struct LeafNodeReader
             return true;
         }
 
-        var useDigest = hasKeyDigests && hasKeyDigest;
-        if (useDigest && DigestSearch.IsAccelerated)
+        if (DigestSearch.IsAccelerated)
         {
             // Branch-free lower bound over the digest array, then resolve the bound
             // inside the run of equal digests with full comparisons (run length is
@@ -380,19 +362,11 @@ readonly ref struct LeafNodeReader
         {
             var midIndex = min + ((max - min) >> 1);
 
-            int compared;
-            if (useDigest)
-            {
-                var digest = Unsafe.ReadUnaligned<ulong>(
-                    ref Unsafe.Add(ref pageReference, DigestBase + midIndex * sizeof(ulong)));
-                compared = digest != keyDigest
-                    ? (digest < keyDigest ? -1 : 1)
-                    : CompareEntry(ref pageReference, midIndex, key, keyDigest, comparer);
-            }
-            else
-            {
-                compared = CompareEntry(ref pageReference, midIndex, key, keyDigest, comparer);
-            }
+            var digest = Unsafe.ReadUnaligned<ulong>(
+                ref Unsafe.Add(ref pageReference, DigestBase + midIndex * sizeof(ulong)));
+            var compared = digest != keyDigest
+                ? (digest < keyDigest ? -1 : 1)
+                : CompareEntry(ref pageReference, midIndex, key, keyDigest, comparer);
 
             switch (op)
             {
@@ -498,10 +472,6 @@ readonly ref struct LeafNodeReader
             meta.KeyLength);
         return comparer.Compare(entryKey, key);
     }
-
-    static void ThrowOmittedKeysNeedDigest() =>
-        throw new InvalidOperationException(
-            "This page stores no key bytes (OmittedKeys); searching it requires a key digest.");
 
     // for debug purpose
     public KeyValuePair<Memory<byte>, Memory<byte>>[] ToArray()

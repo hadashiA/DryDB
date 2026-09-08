@@ -8,10 +8,9 @@ sequence the branch predictor can memorize, and a never-repeating sequence).
 
 The historical `no-digest` rows below were measured against format 1.3, whose
 builder could still write digest-less pages for Int64 tables. Since format 1.4
-digests are not optional (for exact digests they replace the key bytes), and
-faking the layout with a digest-less custom encoding would also swap the
-devirtualized comparer for interface dispatch — contaminating exactly the
-comparison the row existed for — so the probe no longer builds it.
+digests are mandatory (for exact digests they replace the key bytes) and a
+digest-less page layout no longer exists, so the probe no longer builds that
+row. Reproducing it requires checking out a 1.3-era commit.
 
 Used to verify that the timing differences between predictable and
 unpredictable key streams are caused by branch mispredictions, not caches.

@@ -90,35 +90,6 @@ public class ReadOnlyTableTest
     }
 
     [Test]
-    public async Task Get_EncodingWithoutDigestSupport()
-    {
-        // Digests are not a builder option: an encoding opts out by declaring
-        // SupportsKeyDigest => false, which produces pages without a digest area.
-        // Readers detect the absent per-page flag and use the plain search path.
-        var table = await TestHelper.BuildTableAsync(
-            NoDigestAsciiEncoding.Registered,
-            databaseConfigure: builder => builder.PageSize = 128,
-            tableConfigure: builder =>
-            {
-                for (var i = 0; i < 300; i++)
-                {
-                    builder.Append(
-                        Encoding.ASCII.GetBytes($"key{i:D5}"),
-                        Encoding.ASCII.GetBytes($"value{i:D5}"));
-                }
-            });
-
-        using var result1 = table.Get("key00123"u8);
-        Assert.That(result1.HasValue, Is.True);
-        Assert.That(result1.Value.Span.SequenceEqual("value00123"u8), Is.True);
-
-        using var rangeResult = table.GetRange("key00100"u8, "key00110"u8);
-        Assert.That(rangeResult.Count, Is.EqualTo(11));
-
-        Assert.That(table.CountRange("key00100"u8, "key00199"u8), Is.EqualTo(100));
-    }
-
-    [Test]
     public async Task Get_KeysSharingDigestPrefix()
     {
         // All keys share their first 8 bytes, so every key digest collides and the
@@ -665,39 +636,3 @@ public class ReadOnlyTableTest
     }
 }
 
-/// <summary>
-/// ASCII encoding that opts out of key digests (the escape hatch for keys whose
-/// first 8 bytes collide badly). Registered so the reader can resolve it by id.
-/// </summary>
-sealed class NoDigestAsciiEncoding : IKeyEncoding
-{
-    public static readonly NoDigestAsciiEncoding Registered = Register();
-
-    static NoDigestAsciiEncoding Register()
-    {
-        var encoding = new NoDigestAsciiEncoding();
-        KeyEncoding.Register(encoding);
-        return encoding;
-    }
-
-    public string Id => "test-ascii-nodigest";
-
-    public int Compare(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b) =>
-        AsciiOrdinalEncoding.Instance.Compare(a, b);
-
-    public int Compare(ReadOnlyMemory<byte> a, ReadOnlyMemory<byte> b) =>
-        Compare(a.Span, b.Span);
-
-    public int GetMaxEncodedByteCount<TKey>(TKey key) where TKey : IComparable<TKey> =>
-        AsciiOrdinalEncoding.Instance.GetMaxEncodedByteCount(key);
-
-    public bool TryEncode<TKey>(TKey key, Span<byte> destination, out int bytesWritten)
-        where TKey : IComparable<TKey> =>
-        AsciiOrdinalEncoding.Instance.TryEncode(key, destination, out bytesWritten);
-
-    public bool TryEncode(string formattedString, Span<byte> destination, out int bytesWritten) =>
-        AsciiOrdinalEncoding.Instance.TryEncode(formattedString, destination, out bytesWritten);
-
-    public bool TryFormat(ReadOnlySpan<byte> key, Span<byte> destination, out int bytesWritten) =>
-        AsciiOrdinalEncoding.Instance.TryFormat(key, destination, out bytesWritten);
-}

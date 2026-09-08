@@ -59,7 +59,6 @@ public class CompactMetaTest
         // Multi-level tree whose root (internal) and leaves both omit keys.
         var rootHeader = ParseNode(file, directory, result.RootPageNumber);
         Assert.That(rootHeader.NodeKind, Is.EqualTo(NodeKind.Internal));
-        Assert.That(rootHeader.HasKeyDigests, Is.True);
         Assert.That(rootHeader.HasCompactMeta, Is.True);
         Assert.That(rootHeader.HasOmittedKeys, Is.True);
 
@@ -210,7 +209,6 @@ public class CompactMetaTest
         var rootHeader = ParseNode(file, directory, result.RootPageNumber);
         Assert.That(rootHeader.HasCompactMeta, Is.False);
         Assert.That(rootHeader.HasOmittedKeys, Is.False);
-        Assert.That(rootHeader.HasKeyDigests, Is.True);
 
         for (var i = 0L; i < 5000; i += 7)
         {

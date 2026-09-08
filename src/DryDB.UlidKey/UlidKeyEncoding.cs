@@ -1,4 +1,5 @@
 using System;
+using System.Buffers.Binary;
 
 namespace DryDB.UlidKey;
 
@@ -24,6 +25,15 @@ public class UlidKeyEncoding : IKeyEncoding
         var bId = new Ulid(b);
         return aId.CompareTo(bId);
     }
+
+    /// <summary>
+    /// The first eight of the 16 Ulid bytes, big-endian. Ulid comparison is
+    /// byte-lexicographic, so this preserves the order, and the leading bytes carry
+    /// the 48-bit timestamp — collisions (fall back to the full comparison) need two
+    /// ulids sharing timestamp and the first two random bytes.
+    /// </summary>
+    public ulong GetKeyDigest(ReadOnlySpan<byte> key) =>
+        BinaryPrimitives.ReadUInt64BigEndian(key);
 
     public int GetMaxEncodedByteCount<TKey>(TKey key)
         where TKey : IComparable<TKey> => 16;

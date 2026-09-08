@@ -142,16 +142,14 @@ public class DatabaseBuilder : IDisposable
     /// Eytzinger (BFS) order instead of sorted order, which makes the digest search a
     /// branch-free descent whose top levels share a cache line. Costs up to 2x the
     /// digest area (padding to 2^k - 1 slots), and exact-digest encodings keep their
-    /// key bytes on the page (no OmittedKeys). No effect unless the encoding supports
-    /// digests.
+    /// key bytes on the page (no OmittedKeys).
     /// </summary>
     /// <remarks>
-    /// Key digests themselves are not optional: every encoding with
-    /// <see cref="IKeyEncoding.SupportsKeyDigest"/> gets a digest array per node —
-    /// for exact digests it doubles as the key column and makes entries smaller than
-    /// the digest-less layout would be. An encoding whose keys collide badly in the
-    /// first 8 bytes (long shared prefixes) can opt out by declaring
-    /// <c>SupportsKeyDigest =&gt; false</c>.
+    /// Key digests themselves are not optional: every encoding must provide an
+    /// order-preserving <see cref="IKeyEncoding.GetKeyDigest"/> and every tree page
+    /// stores a digest array — for exact digests it doubles as the key column and
+    /// makes entries smaller than a digest-less layout would be. Orders that cannot
+    /// spread keys into 64 bits should normalize at encode time.
     /// </remarks>
     public bool EytzingerDigests { get; set; } = false;
 
@@ -195,12 +193,10 @@ public class DatabaseBuilder : IDisposable
         // 1.3: every on-disk page pointer (roots, siblings, children, blob refs,
         // secondary-index PageRefs) is a dense page ordinal instead of a file offset,
         // and a page directory section (ordinal -> offset) sits at the end of the
-        // file. 1.4: compact per-page entry metadata (CompactMeta) and key-less pages
-        // for exact-digest encodings (OmittedKeys) — see NodeFlags. Readers older
-        // than the written version cannot parse these files; this builder always
-        // writes the latest. Key digests (1.1), Eytzinger digest layout (1.2) and the
-        // 1.4 layouts are per-page flags in the node header, orthogonal to the
-        // pointer format.
+        // file. 1.4: key digests are mandatory on every tree page, entry metadata is
+        // compacted per page (CompactMeta) and exact-digest encodings store no key
+        // bytes (OmittedKeys) — see NodeFlags. Readers older than the written
+        // version cannot parse these files; this builder always writes the latest.
         header.MinorVersion = Header.SupportedMinorVersion;
         header.PageFilterCount = (ushort)(filterOptions?.Filters.Count ?? 0);
         header.PageSize = PageSize;
