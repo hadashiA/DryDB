@@ -11,15 +11,25 @@ namespace DryDB.BTree;
 ///  Leaf Node Reader
 /// </summary>>
 /// <remarks>
+/// Supports both meta layouts: the classic 8-byte record per entry, and the compact
+/// layout (format 1.4, <see cref="NodeFlags.CompactMeta"/>) where lengths are derived
+/// from an absolute ushort offset array — see <see cref="NodeFlags"/> for the on-disk
+/// shapes. Pages flagged <see cref="NodeFlags.OmittedKeys"/> carry no key bytes at
+/// all: the digest array is exact, so every key comparison reduces to a digest
+/// comparison.
 /// </remarks>
-readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool hasKeyDigests, bool hasEytzingerDigests)
+readonly ref struct LeafNodeReader
 {
     internal const ushort OverflowSentinel = ushort.MaxValue; // 0xFFFF
+
+    /// <summary>Bit 15 of a compact leaf offset: the entry is an overflow value.</summary>
+    internal const ushort CompactOverflowBit = 0x8000;
+    internal const ushort CompactOffsetMask = 0x7FFF;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static bool IsOverflow(ushort valueLength) => valueLength == OverflowSentinel;
 
-    [StructLayout(LayoutKind.Explicit, Size = 6, Pack = 1)]
+    [StructLayout(LayoutKind.Explicit, Size = 8, Pack = 1)]
     struct NodeEntryMeta
     {
         [FieldOffset(0)]
@@ -35,15 +45,46 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
     static readonly int DigestBase = Unsafe.SizeOf<PageHeader>() + Unsafe.SizeOf<NodeHeader>();
 
 #if NETSTANDARD
-    readonly ReadOnlySpan<byte> page = page;
+    readonly ReadOnlySpan<byte> page;
 #else
-    readonly ref byte pageReference = ref MemoryMarshal.GetReference(page);
+    readonly ref byte pageReference;
 #endif
-    readonly int metaBase = DigestBase + (hasKeyDigests
-        ? (hasEytzingerDigests ? EytzingerLayout.CompleteSize(entryCount) : entryCount) * sizeof(ulong)
-        : 0);
-    readonly bool hasKeyDigests = hasKeyDigests;
-    readonly bool hasEytzingerDigests = hasEytzingerDigests;
+    readonly int entryCount;
+    readonly int metaBase;
+    readonly bool hasEytzingerDigests;
+    readonly bool compactMeta;
+    readonly bool omittedKeys;
+
+    public LeafNodeReader(ReadOnlySpan<byte> page, in NodeHeader header)
+    {
+#if NETSTANDARD
+        this.page = page;
+#else
+        pageReference = ref MemoryMarshal.GetReference(page);
+#endif
+        entryCount = header.EntryCount;
+        hasEytzingerDigests = header.HasEytzingerDigests;
+        compactMeta = header.HasCompactMeta;
+        omittedKeys = header.HasOmittedKeys;
+        // Every tree page carries a digest array (format 1.4: digests are mandatory).
+        metaBase = DigestBase +
+            (hasEytzingerDigests ? EytzingerLayout.CompleteSize(entryCount) : entryCount) * sizeof(ulong);
+    }
+
+    /// <summary>
+    /// The digest of the index-th entry in sorted order. Only valid on pages whose
+    /// digests are stored sorted (never Eytzinger); used to reconstruct keys on
+    /// <see cref="NodeFlags.OmittedKeys"/> pages.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public ulong GetDigestAt(int index)
+    {
+#if NETSTANDARD
+        ref var pageReference = ref MemoryMarshal.GetReference(page);
+#endif
+        return Unsafe.ReadUnaligned<ulong>(
+            ref Unsafe.Add(ref pageReference, DigestBase + index * sizeof(ulong)));
+    }
 
     public void GetAt(int index, out ReadOnlySpan<byte> key, out ReadOnlySpan<byte> value)
     {
@@ -51,6 +92,8 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
         ref var pageReference = ref MemoryMarshal.GetReference(page);
 #endif
         var meta = GetMeta(index);
+        // On OmittedKeys pages the key is not stored; KeyLength is 0 and the key span
+        // comes back empty (reconstruct it from GetDigestAt via the encoding instead).
         key = MemoryMarshal.CreateReadOnlySpan(
                 ref Unsafe.Add(ref pageReference, meta.PageOffset),
             meta.KeyLength);
@@ -76,7 +119,6 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
         scoped ReadOnlySpan<byte> key,
         TComparer comparer,
         ulong keyDigest,
-        bool hasKeyDigest,
         out int index,
         out int valueOffset,
         out ushort valueLength)
@@ -85,7 +127,7 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
 #if NETSTANDARD
         ref var pageReference = ref MemoryMarshal.GetReference(page);
 #endif
-        if (hasEytzingerDigests && hasKeyDigest)
+        if (hasEytzingerDigests)
         {
             // Branch-free descent yields the rank of the first entry whose digest is
             // >= keyDigest; entries below the rank are < key. A match can only sit in
@@ -95,7 +137,7 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
                 ref pageReference, DigestBase, (metaBase - DigestBase) / sizeof(ulong), keyDigest);
             for (; i < entryCount; i++)
             {
-                var compared = CompareFull(ref pageReference, i, key, comparer);
+                var compared = CompareEntry(ref pageReference, i, key, keyDigest, comparer);
                 if (compared == 0)
                 {
                     var meta = GetMeta(i);
@@ -113,8 +155,7 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
             return false;
         }
 
-        var useDigest = hasKeyDigests && hasKeyDigest;
-        if (useDigest && DigestSearch.IsAccelerated)
+        if (DigestSearch.IsAccelerated)
         {
             // Branch-free lower bound over the digest array; a match can only sit in
             // the run of digests equal to keyDigest, which starts at the bound.
@@ -127,7 +168,7 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
                     ref Unsafe.Add(ref pageReference, DigestBase + i * sizeof(ulong)));
                 if (digest != keyDigest) break;
 
-                var compared = CompareFull(ref pageReference, i, key, comparer);
+                var compared = CompareEntry(ref pageReference, i, key, keyDigest, comparer);
                 if (compared == 0)
                 {
                     var meta = GetMeta(i);
@@ -152,21 +193,13 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
         {
             var midIndex = min + ((max - min) >> 1);
 
-            int compared;
-            if (useDigest)
-            {
-                // One contiguous load instead of dereferencing the variable-length key;
-                // only digest ties fall back to the full comparison.
-                var digest = Unsafe.ReadUnaligned<ulong>(
-                    ref Unsafe.Add(ref pageReference, DigestBase + midIndex * sizeof(ulong)));
-                compared = digest != keyDigest
-                    ? (digest < keyDigest ? -1 : 1)
-                    : CompareFull(ref pageReference, midIndex, key, comparer);
-            }
-            else
-            {
-                compared = CompareFull(ref pageReference, midIndex, key, comparer);
-            }
+            // One contiguous load instead of dereferencing the variable-length key;
+            // only digest ties fall back to the full comparison.
+            var digest = Unsafe.ReadUnaligned<ulong>(
+                ref Unsafe.Add(ref pageReference, DigestBase + midIndex * sizeof(ulong)));
+            var compared = digest != keyDigest
+                ? (digest < keyDigest ? -1 : 1)
+                : CompareEntry(ref pageReference, midIndex, key, keyDigest, comparer);
 
             if (compared == 0)
             {
@@ -197,14 +230,13 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
         SearchOperator op,
         TComparer comparer,
         ulong keyDigest,
-        bool hasKeyDigest,
         out int index)
         where TComparer : struct, IKeyComparer
     {
 #if  NETSTANDARD
         ref var pageReference = ref MemoryMarshal.GetReference(page);
 #endif
-        if (hasEytzingerDigests && hasKeyDigest)
+        if (hasEytzingerDigests)
         {
             // Branch-free descent to the rank of the first entry with digest >=
             // keyDigest, then resolve the bound inside the run of equal digests with
@@ -217,7 +249,7 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
                 case SearchOperator.Equal:
                     for (; i < entryCount; i++)
                     {
-                        var compared = CompareFull(ref pageReference, i, key, comparer);
+                        var compared = CompareEntry(ref pageReference, i, key, keyDigest, comparer);
                         if (compared == 0)
                         {
                             index = i;
@@ -230,7 +262,7 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
 
                 case SearchOperator.LowerBound:
                     // first entry >= key
-                    while (i < entryCount && CompareFull(ref pageReference, i, key, comparer) < 0)
+                    while (i < entryCount && CompareEntry(ref pageReference, i, key, keyDigest, comparer) < 0)
                     {
                         i++;
                     }
@@ -238,7 +270,7 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
 
                 case SearchOperator.UpperBound:
                     // first entry > key
-                    while (i < entryCount && CompareFull(ref pageReference, i, key, comparer) <= 0)
+                    while (i < entryCount && CompareEntry(ref pageReference, i, key, keyDigest, comparer) <= 0)
                     {
                         i++;
                     }
@@ -257,8 +289,7 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
             return true;
         }
 
-        var useDigest = hasKeyDigests && hasKeyDigest;
-        if (useDigest && DigestSearch.IsAccelerated)
+        if (DigestSearch.IsAccelerated)
         {
             // Branch-free lower bound over the digest array, then resolve the bound
             // inside the run of equal digests with full comparisons (run length is
@@ -275,7 +306,7 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
                             ref Unsafe.Add(ref pageReference, DigestBase + i * sizeof(ulong)));
                         if (digest != keyDigest) break;
 
-                        var compared = CompareFull(ref pageReference, i, key, comparer);
+                        var compared = CompareEntry(ref pageReference, i, key, keyDigest, comparer);
                         if (compared == 0)
                         {
                             index = i;
@@ -293,7 +324,7 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
                         var digest = Unsafe.ReadUnaligned<ulong>(
                             ref Unsafe.Add(ref pageReference, DigestBase + i * sizeof(ulong)));
                         if (digest != keyDigest) break;
-                        if (CompareFull(ref pageReference, i, key, comparer) >= 0) break;
+                        if (CompareEntry(ref pageReference, i, key, keyDigest, comparer) >= 0) break;
                         i++;
                     }
                     break;
@@ -305,7 +336,7 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
                         var digest = Unsafe.ReadUnaligned<ulong>(
                             ref Unsafe.Add(ref pageReference, DigestBase + i * sizeof(ulong)));
                         if (digest != keyDigest) break;
-                        if (CompareFull(ref pageReference, i, key, comparer) > 0) break;
+                        if (CompareEntry(ref pageReference, i, key, keyDigest, comparer) > 0) break;
                         i++;
                     }
                     break;
@@ -331,19 +362,11 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
         {
             var midIndex = min + ((max - min) >> 1);
 
-            int compared;
-            if (useDigest)
-            {
-                var digest = Unsafe.ReadUnaligned<ulong>(
-                    ref Unsafe.Add(ref pageReference, DigestBase + midIndex * sizeof(ulong)));
-                compared = digest != keyDigest
-                    ? (digest < keyDigest ? -1 : 1)
-                    : CompareFull(ref pageReference, midIndex, key, comparer);
-            }
-            else
-            {
-                compared = CompareFull(ref pageReference, midIndex, key, comparer);
-            }
+            var digest = Unsafe.ReadUnaligned<ulong>(
+                ref Unsafe.Add(ref pageReference, DigestBase + midIndex * sizeof(ulong)));
+            var compared = digest != keyDigest
+                ? (digest < keyDigest ? -1 : 1)
+                : CompareEntry(ref pageReference, midIndex, key, keyDigest, comparer);
 
             switch (op)
             {
@@ -401,7 +424,7 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
             case SearchOperator.Equal:
                 if (min < max)
                 {
-                    if (CompareFull(ref pageReference, min, key, comparer) == 0)
+                    if (CompareEntry(ref pageReference, min, key, keyDigest, comparer) == 0)
                     {
                         index = min;
                         return true;
@@ -426,10 +449,23 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
         }
     }
 
+    /// <summary>
+    /// Compares the index-th entry against the search key. On
+    /// <see cref="NodeFlags.OmittedKeys"/> pages the digest is exact and no key bytes
+    /// exist, so the comparison reduces to the digest order; everywhere else it is the
+    /// full key comparison.
+    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    int CompareFull<TComparer>(ref byte pageReference, int index, ReadOnlySpan<byte> key, TComparer comparer)
+    int CompareEntry<TComparer>(ref byte pageReference, int index, ReadOnlySpan<byte> key, ulong keyDigest, TComparer comparer)
         where TComparer : struct, IKeyComparer
     {
+        if (omittedKeys)
+        {
+            var digest = Unsafe.ReadUnaligned<ulong>(
+                ref Unsafe.Add(ref pageReference, DigestBase + index * sizeof(ulong)));
+            return (digest > keyDigest ? 1 : 0) - (digest < keyDigest ? 1 : 0);
+        }
+
         var meta = GetMeta(index);
         var entryKey = MemoryMarshal.CreateReadOnlySpan(
             ref Unsafe.Add(ref pageReference, meta.PageOffset),
@@ -479,9 +515,36 @@ readonly ref struct LeafNodeReader(ReadOnlySpan<byte> page, int entryCount, bool
 #if NETSTANDARD
         ref var pageReference = ref MemoryMarshal.GetReference(page);
 #endif
-        ref var ptr = ref Unsafe.Add(
-            ref pageReference,
-            metaBase + index * Unsafe.SizeOf<NodeEntryMeta>());
-        return Unsafe.ReadUnaligned<NodeEntryMeta>(ref ptr);
+        if (!compactMeta)
+        {
+            ref var recordPtr = ref Unsafe.Add(
+                ref pageReference,
+                metaBase + index * Unsafe.SizeOf<NodeEntryMeta>());
+            return Unsafe.ReadUnaligned<NodeEntryMeta>(ref recordPtr);
+        }
+
+        // Compact layout: ushort offsets[entryCount + 1] (bit 15 = overflow), then, on
+        // pages that store keys, ushort keyLengths[entryCount]. offset[i] and
+        // offset[i+1] are adjacent, so one 4-byte load covers both (little endian).
+        var offsetPair = Unsafe.ReadUnaligned<uint>(
+            ref Unsafe.Add(ref pageReference, metaBase + index * sizeof(ushort)));
+        var rawOffset = (ushort)offsetPair;
+        var nextOffset = (ushort)(offsetPair >> 16);
+
+        var offset = rawOffset & CompactOffsetMask;
+        var keyLength = omittedKeys
+            ? (ushort)0
+            : Unsafe.ReadUnaligned<ushort>(
+                ref Unsafe.Add(ref pageReference,
+                    metaBase + (entryCount + 1) * sizeof(ushort) + index * sizeof(ushort)));
+
+        return new NodeEntryMeta
+        {
+            PageOffset = offset,
+            KeyLength = keyLength,
+            ValueLength = (rawOffset & CompactOverflowBit) != 0
+                ? OverflowSentinel
+                : (ushort)((nextOffset & CompactOffsetMask) - offset - keyLength),
+        };
     }
 }

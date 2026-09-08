@@ -11,11 +11,20 @@ using System.Threading.Tasks;
 
 namespace DryDB;
 
-// Format 1.3. Every page pointer in the file (index root, node siblings, internal
+// Format 1.4. Every page pointer in the file (index root, node siblings, internal
 // node children, overflow blob refs, secondary-index PageRefs) is a dense page
-// ordinal assigned in flush order; the page directory section at the end of the
-// file maps ordinal -> byte offset. Readers translate through the directory only
-// when loading a page; the page cache is indexed directly by ordinal.
+// ordinal assigned in flush order (since 1.3); the page directory section at the
+// end of the file maps ordinal -> byte offset. Readers translate through the
+// directory only when loading a page; the page cache is indexed directly by
+// ordinal.
+//
+// 1.4 makes key digests mandatory (every tree page carries a digest array; the
+// former HasKeyDigests page flag is retired) and adds two per-page layout flags
+// in the node header's kind field (see NodeFlags): CompactMeta (entry metadata
+// as a ushort offset array with derived lengths) and OmittedKeys (exact-digest
+// trees store no key bytes; the digest array doubles as the key column).
+// Because readers now assume the digest area, pre-1.4 files (which may lack it)
+// are rejected.
 //
 // Header
 //   magic_bytes(4): "DRY\0"
@@ -62,7 +71,7 @@ unsafe struct Header
     public static ReadOnlySpan<byte> MagicBytesValue => "DRY\0"u8;
 
     public const byte SupportedMajorVersion = 1;
-    public const byte SupportedMinorVersion = 3;
+    public const byte SupportedMinorVersion = 4;
 
     /// <summary>Byte offsets of the back-patched fields (see WritePageDirectoryAsync).</summary>
     public const int PageCountFieldOffset = 14;

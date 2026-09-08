@@ -8,18 +8,13 @@ namespace DryDB.Internal;
 /// Comparison-only view of a key encoding, implemented by structs.
 /// <see cref="BTree.TreeWalker{TComparer}"/> takes these as value-type generic
 /// arguments, so the runtime generates a specialized instantiation per comparer and
-/// every comparison in the B+Tree search loops is devirtualized and inlined — including
-/// on AOT targets such as IL2CPP, where interface dispatch on
-/// <see cref="IKeyEncoding"/> is never devirtualized. <see cref="SupportsKeyDigest"/>
-/// additionally becomes a JIT-time constant, which removes the digest branch from the
-/// binary search loops entirely.
+/// every comparison and digest computation in the B+Tree search loops is
+/// devirtualized and inlined — including on AOT targets such as IL2CPP, where
+/// interface dispatch on <see cref="IKeyEncoding"/> is never devirtualized.
 /// </summary>
 interface IKeyComparer
 {
     int Compare(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b);
-
-    /// <inheritdoc cref="IKeyEncoding.SupportsKeyDigest"/>
-    bool SupportsKeyDigest { get; }
 
     /// <inheritdoc cref="IKeyEncoding.GetKeyDigest"/>
     ulong GetKeyDigest(ReadOnlySpan<byte> key);
@@ -35,12 +30,6 @@ readonly struct Int64KeyComparer : IKeyComparer
     public int Compare(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b) =>
         Int64LittleEndianEncoding.Instance.Compare(a, b);
 
-    public bool SupportsKeyDigest
-    {
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        get => true;
-    }
-
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public ulong GetKeyDigest(ReadOnlySpan<byte> key) =>
         Int64LittleEndianEncoding.Instance.GetKeyDigest(key);
@@ -52,12 +41,6 @@ readonly struct AsciiKeyComparer : IKeyComparer
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public int Compare(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b) =>
         AsciiOrdinalEncoding.Instance.Compare(a, b);
-
-    public bool SupportsKeyDigest
-    {
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        get => true;
-    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public ulong GetKeyDigest(ReadOnlySpan<byte> key) =>
@@ -72,13 +55,9 @@ readonly struct Uuidv7KeyComparer : IKeyComparer
     public int Compare(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b) =>
         Uuidv7KeyEncoding.Instance.Compare(a, b);
 
-    public bool SupportsKeyDigest
-    {
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        get => false;
-    }
-
-    public ulong GetKeyDigest(ReadOnlySpan<byte> key) => 0;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public ulong GetKeyDigest(ReadOnlySpan<byte> key) =>
+        Uuidv7KeyEncoding.Instance.GetKeyDigest(key);
 }
 #endif
 
@@ -90,8 +69,6 @@ readonly struct Uuidv7KeyComparer : IKeyComparer
 readonly struct FallbackKeyComparer(IKeyEncoding encoding) : IKeyComparer
 {
     public int Compare(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b) => encoding.Compare(a, b);
-
-    public bool SupportsKeyDigest => encoding.SupportsKeyDigest;
 
     public ulong GetKeyDigest(ReadOnlySpan<byte> key) => encoding.GetKeyDigest(key);
 }
@@ -122,8 +99,6 @@ readonly struct DuplicateKeyComparer(IKeyEncoding sourceEncoding) : IKeyComparer
         if (aValueId > bValueId) return 1;
         return 0;
     }
-
-    public bool SupportsKeyDigest => sourceEncoding.SupportsKeyDigest;
 
     // The source key dominates the (source, rid) order, so its digest is a valid
     // coarse digest for the composite key; rid ties collide and fall back.

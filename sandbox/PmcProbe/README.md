@@ -2,10 +2,15 @@
 
 Reads Apple Silicon PMU counters (cycles, instructions, branches, branch
 mispredicts) around the same lookup loops as `DryDB.Benchmark`'s
-`ReadBenchmark`, for three node layouts (sorted digests + SIMD window,
-Eytzinger digests, no digests) × three key patterns (fixed key, a repeating
-1000-key sequence the branch predictor can memorize, and a never-repeating
-sequence).
+`ReadBenchmark`, for two node layouts (sorted digests + SIMD window,
+Eytzinger digests) × three key patterns (fixed key, a repeating 1000-key
+sequence the branch predictor can memorize, and a never-repeating sequence).
+
+The historical `no-digest` rows below were measured against format 1.3, whose
+builder could still write digest-less pages for Int64 tables. Since format 1.4
+digests are mandatory (for exact digests they replace the key bytes) and a
+digest-less page layout no longer exists, so the probe no longer builds that
+row. Reproducing it requires checking out a 1.3-era commit.
 
 Used to verify that the timing differences between predictable and
 unpredictable key streams are caused by branch mispredictions, not caches.

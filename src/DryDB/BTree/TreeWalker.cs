@@ -310,7 +310,7 @@ abstract class TreeWalker
 
         var (page, entryIndex) = minLeaf.Value;
         var header = NodeHeader.Parse(page.Memory.Span);
-        var leafNode = new LeafNodeReader(page.Memory.Span, header.EntryCount, header.HasKeyDigests, header.HasEytzingerDigests);
+        var leafNode = new LeafNodeReader(page.Memory.Span, header);
         leafNode.GetAt(entryIndex, out var pageOffset, out var keyLength, out var valueLength);
 
         if (LeafNodeReader.IsOverflow(valueLength))
@@ -334,7 +334,7 @@ abstract class TreeWalker
 
         var (page, entryIndex) = maxLeaf.Value;
         var header = NodeHeader.Parse(page.Memory.Span);
-        var leafNode = new LeafNodeReader(page.Memory.Span, header.EntryCount, header.HasKeyDigests, header.HasEytzingerDigests);
+        var leafNode = new LeafNodeReader(page.Memory.Span, header);
         leafNode.GetAt(entryIndex, out var pageOffset, out var keyLength, out var valueLength);
 
         if (LeafNodeReader.IsOverflow(valueLength))
@@ -364,7 +364,7 @@ abstract class TreeWalker
                     return null;
                 }
 
-                var internalNode = new InternalNodeReader(pageSpan, header.EntryCount, header.HasKeyDigests, header.HasEytzingerDigests);
+                var internalNode = new InternalNodeReader(pageSpan, header);
                 internalNode.GetAt(0, out _, out pageNumber);
                 lease.Release();
             }
@@ -396,7 +396,7 @@ abstract class TreeWalker
                     return null;
                 }
 
-                var internalNode = new InternalNodeReader(pageSpan, header.EntryCount, header.HasKeyDigests, header.HasEytzingerDigests);
+                var internalNode = new InternalNodeReader(pageSpan, header);
                 internalNode.GetAt(header.EntryCount - 1, out _, out pageNumber);
                 lease.Release();
             }
