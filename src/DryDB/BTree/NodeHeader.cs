@@ -29,6 +29,34 @@ static class NodeFlags
     /// format 1.2.
     /// </summary>
     public const int EytzingerDigests = 1 << 9;
+
+    /// <summary>
+    /// Compact entry metadata (introduced in format 1.4). Instead of a fixed-size
+    /// record per entry, the meta area holds absolute payload offsets as
+    /// <c>ushort[entry_count + 1]</c>: entry i's payload spans
+    /// [offset[i], offset[i+1]) and every length is derived from adjacent offsets,
+    /// the final slot closing the last entry. Bit 15 of a leaf offset marks the entry
+    /// as an overflow value (its inline payload is the 8-byte blob page ordinal),
+    /// which is why this layout requires pageSize &lt;= 32768; the builder keeps the
+    /// classic meta records for larger pages. Leaf pages that store keys append
+    /// <c>ushort key_length[entry_count]</c> after the offsets. Internal pages never
+    /// need key lengths (payload per entry is key + 8-byte child ordinal, so the key
+    /// length falls out of the offsets).
+    /// </summary>
+    public const int CompactMeta = 1 << 10;
+
+    /// <summary>
+    /// The payload stores no key bytes (introduced in format 1.4). Only written when
+    /// the key encoding declares <see cref="IKeyEncoding.IsKeyDigestExact"/>: the
+    /// digest array is then a bijective image of the keys, so it replaces every key
+    /// comparison (equal digest = equal key) and reconstructs key bytes via
+    /// <see cref="IKeyEncoding.TryDecodeKeyFromDigest"/>. Always combined with
+    /// <see cref="HasKeyDigests"/> and <see cref="CompactMeta"/>, never with
+    /// <see cref="EytzingerDigests"/> (enumeration needs the digest of the i-th entry
+    /// in sorted order). Internal pages drop their meta area entirely: the payload is
+    /// a dense array of 8-byte child ordinals.
+    /// </summary>
+    public const int OmittedKeys = 1 << 11;
 }
 
 static class NodeHeaderExtensions
@@ -71,6 +99,18 @@ unsafe struct NodeHeader
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         get => ((int)Kind & NodeFlags.EytzingerDigests) != 0;
+    }
+
+    public bool HasCompactMeta
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => ((int)Kind & NodeFlags.CompactMeta) != 0;
+    }
+
+    public bool HasOmittedKeys
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => ((int)Kind & NodeFlags.OmittedKeys) != 0;
     }
 
     [FieldOffset(4)]

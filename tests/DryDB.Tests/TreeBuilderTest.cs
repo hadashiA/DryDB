@@ -65,16 +65,18 @@ public class TreeBuilderTest
         Assert.That(header.EntryCount, Is.EqualTo(3));
 
         var internalNode = new InternalNodeReader(
-            result.AsSpan((int)pageDirectory.Offsets[(int)buildResult.RootPageNumber.Value]), header.EntryCount, header.HasKeyDigests, header.HasEytzingerDigests);
+            result.AsSpan((int)pageDirectory.Offsets[(int)buildResult.RootPageNumber.Value]), header);
         internalNode.GetAt(0, out var internalKey1, out var childPosition1);
         internalNode.GetAt(1, out var internalKey2, out var childPosition2);
 
+        // Compact meta (format 1.4) fits 4 entries per 128-byte leaf, so the second
+        // leaf starts at key05.
         Assert.That(internalKey1.SequenceEqual("key01"u8), Is.True);
-        Assert.That(internalKey2.SequenceEqual("key04"u8), Is.True);
+        Assert.That(internalKey2.SequenceEqual("key05"u8), Is.True);
 
         header = NodeHeader.Parse(result.AsSpan((int)pageDirectory.Offsets[(int)childPosition1.Value]));
         Assert.That(header.NodeKind, Is.EqualTo(NodeKind.Leaf));
-        Assert.That(header.EntryCount, Is.EqualTo(3));
+        Assert.That(header.EntryCount, Is.EqualTo(4));
         Assert.That(header.LeftSiblingPageNumber.IsEmpty, Is.True);
         // Assert.That(header.RightSiblingPosition, Is.EqualTo());
 

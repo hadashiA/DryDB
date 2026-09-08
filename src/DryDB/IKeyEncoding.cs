@@ -32,6 +32,28 @@ public interface IKeyEncoding : IComparer<ReadOnlyMemory<byte>>
     /// </summary>
     ulong GetKeyDigest(ReadOnlySpan<byte> key) => 0;
 
+    /// <summary>
+    /// Whether <see cref="GetKeyDigest"/> is a bijection over this encoding's key
+    /// space: equal digests imply equal keys, and the key bytes are recoverable via
+    /// <see cref="TryDecodeKeyFromDigest"/>. When true, the database builder omits the
+    /// key bytes from every B+Tree page entirely — the digest array doubles as the key
+    /// column (format 1.4, <c>OmittedKeys</c>). Requires
+    /// <see cref="SupportsKeyDigest"/>.
+    /// </summary>
+    bool IsKeyDigestExact => false;
+
+    /// <summary>
+    /// Reconstructs the encoded key bytes from an exact digest (the inverse of
+    /// <see cref="GetKeyDigest"/>). Only meaningful when
+    /// <see cref="IsKeyDigestExact"/> is true; the default returns false.
+    /// </summary>
+    /// <returns>false if the destination is too small or digests are not exact.</returns>
+    bool TryDecodeKeyFromDigest(ulong digest, Span<byte> destination, out int bytesWritten)
+    {
+        bytesWritten = 0;
+        return false;
+    }
+
     int GetMaxEncodedByteCount<TKey>(TKey key)
         where TKey : IComparable<TKey>;
 
@@ -123,6 +145,22 @@ public sealed class Int64LittleEndianEncoding : IKeyEncoding
     {
         var value = Unsafe.ReadUnaligned<long>(ref MemoryMarshal.GetReference(key));
         return (ulong)value ^ 0x8000_0000_0000_0000UL;
+    }
+
+    public bool IsKeyDigestExact => true;
+
+    public bool TryDecodeKeyFromDigest(ulong digest, Span<byte> destination, out int bytesWritten)
+    {
+        if (destination.Length < sizeof(long))
+        {
+            bytesWritten = 0;
+            return false;
+        }
+        Unsafe.WriteUnaligned(
+            ref MemoryMarshal.GetReference(destination),
+            (long)(digest ^ 0x8000_0000_0000_0000UL));
+        bytesWritten = sizeof(long);
+        return true;
     }
 
     public int GetMaxEncodedByteCount<TKey>(TKey key)

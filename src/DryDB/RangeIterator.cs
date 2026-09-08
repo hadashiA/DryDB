@@ -31,7 +31,21 @@ public class RangeIterator :
                 throw new InvalidOperationException("Invalid node kind");
             }
 
-            var reader = new LeafNodeReader(currentPage.Memory.Span, header.EntryCount, header.HasKeyDigests, header.HasEytzingerDigests);
+            var reader = new LeafNodeReader(currentPage.Memory.Span, header);
+
+            if (header.HasOmittedKeys)
+            {
+                // The page stores no key bytes; reconstruct them from the exact digest.
+                var digest = reader.GetDigestAt(currentEntryIndex);
+                var buffer = new byte[sizeof(ulong) * 2];
+                if (!treeWalker.KeyEncoding.TryDecodeKeyFromDigest(digest, buffer, out var written))
+                {
+                    throw new InvalidOperationException(
+                        $"Key encoding `{treeWalker.KeyEncoding.Id}` cannot reconstruct keys from digests.");
+                }
+                return buffer.AsMemory(0, written);
+            }
+
             reader.GetAt(currentEntryIndex, out var pageOffset, out var keyLength, out _);
             return currentPage.Memory.Slice(pageOffset, keyLength);
         }
@@ -49,7 +63,7 @@ public class RangeIterator :
             {
                 throw new InvalidOperationException("Invalid node kind");
             }
-            var reader = new LeafNodeReader(currentPage.Memory.Span, header.EntryCount, header.HasKeyDigests, header.HasEytzingerDigests);
+            var reader = new LeafNodeReader(currentPage.Memory.Span, header);
             reader.GetAt(currentEntryIndex, out var pageOffset, out var keyLength, out var valueLength);
 
             if (LeafNodeReader.IsOverflow(valueLength))

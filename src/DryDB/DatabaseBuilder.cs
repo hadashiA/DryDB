@@ -194,9 +194,12 @@ public class DatabaseBuilder : IDisposable
         // 1.3: every on-disk page pointer (roots, siblings, children, blob refs,
         // secondary-index PageRefs) is a dense page ordinal instead of a file offset,
         // and a page directory section (ordinal -> offset) sits at the end of the
-        // file. Readers older than 1.3 cannot parse these files; this builder always
-        // writes 1.3. Key digests (1.1) and Eytzinger digest layout (1.2) remain
-        // per-page flags in the node header, orthogonal to the pointer format.
+        // file. 1.4: compact per-page entry metadata (CompactMeta) and key-less pages
+        // for exact-digest encodings (OmittedKeys) — see NodeFlags. Readers older
+        // than the written version cannot parse these files; this builder always
+        // writes the latest. Key digests (1.1), Eytzinger digest layout (1.2) and the
+        // 1.4 layouts are per-page flags in the node header, orthogonal to the
+        // pointer format.
         header.MinorVersion = Header.SupportedMinorVersion;
         header.PageFilterCount = (ushort)(filterOptions?.Filters.Count ?? 0);
         header.PageSize = PageSize;

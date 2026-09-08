@@ -11,11 +11,18 @@ using System.Threading.Tasks;
 
 namespace DryDB;
 
-// Format 1.3. Every page pointer in the file (index root, node siblings, internal
+// Format 1.4. Every page pointer in the file (index root, node siblings, internal
 // node children, overflow blob refs, secondary-index PageRefs) is a dense page
-// ordinal assigned in flush order; the page directory section at the end of the
-// file maps ordinal -> byte offset. Readers translate through the directory only
-// when loading a page; the page cache is indexed directly by ordinal.
+// ordinal assigned in flush order (since 1.3); the page directory section at the
+// end of the file maps ordinal -> byte offset. Readers translate through the
+// directory only when loading a page; the page cache is indexed directly by
+// ordinal.
+//
+// 1.4 adds two per-page layout flags in the node header's kind field (see
+// NodeFlags): CompactMeta (entry metadata as a ushort offset array with derived
+// lengths) and OmittedKeys (exact-digest trees store no key bytes; the digest
+// array doubles as the key column). Both are page-level, so this reader also
+// accepts 1.3 files unchanged.
 //
 // Header
 //   magic_bytes(4): "DRY\0"
@@ -62,7 +69,13 @@ unsafe struct Header
     public static ReadOnlySpan<byte> MagicBytesValue => "DRY\0"u8;
 
     public const byte SupportedMajorVersion = 1;
-    public const byte SupportedMinorVersion = 3;
+    public const byte SupportedMinorVersion = 4;
+
+    /// <summary>
+    /// Oldest minor version this reader still accepts. 1.4 only added page-level
+    /// layout flags, so 1.3 files parse unchanged.
+    /// </summary>
+    public const byte MinSupportedMinorVersion = 3;
 
     /// <summary>Byte offsets of the back-patched fields (see WritePageDirectoryAsync).</summary>
     public const int PageCountFieldOffset = 14;
@@ -125,11 +138,13 @@ static partial class DryDBCodec
                 throw new StorageFormatException("Invalid magic bytes");
             }
             if (header.MajorVersion != Header.SupportedMajorVersion ||
-                header.MinorVersion != Header.SupportedMinorVersion)
+                header.MinorVersion < Header.MinSupportedMinorVersion ||
+                header.MinorVersion > Header.SupportedMinorVersion)
             {
                 throw new StorageFormatException(
                     $"Unsupported storage format version {header.MajorVersion}.{header.MinorVersion}: " +
-                    $"this reader supports {Header.SupportedMajorVersion}.{Header.SupportedMinorVersion} only. " +
+                    $"this reader supports {Header.SupportedMajorVersion}.{Header.MinSupportedMinorVersion}" +
+                    $"-{Header.SupportedMajorVersion}.{Header.SupportedMinorVersion} only. " +
                     "Rebuild the file with the current DatabaseBuilder.");
             }
         }
