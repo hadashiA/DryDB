@@ -31,6 +31,19 @@ public record DatabaseLoadOptions
     };
 
     public int CacheSize { get; set; } = 2000 * 1024 * 1024;
+
+    /// <summary>
+    /// Ask the OS not to keep this file's pages in its own page cache, so the only
+    /// in-memory copy of the data is DryDB's page cache (avoids double caching).
+    /// Best effort: currently implemented on macOS via fcntl(F_NOCACHE) and ignored
+    /// on other platforms and non-file streams. Turning this on trades memory for
+    /// slower re-reads: a page evicted from the DryDB cache is fetched from disk
+    /// again instead of the OS page cache, so it fits deployments where the DryDB
+    /// cache is sized to hold the working set (e.g. memory-accounted containers or
+    /// consoles), not configurations that rely on the OS cache as a second level.
+    /// </summary>
+    public bool BypassOsPageCache { get; set; }
+
     public StorageFactory StorageFactory { get; set; } = DefaultStorageFactory;
 }
 
@@ -47,6 +60,10 @@ public sealed class ReadOnlyDatabase : IDisposable
     {
         options ??= DatabaseLoadOptions.Default;
         var catalog = await DryDBCodec.ParseCatalogAsync(stream, cancellationToken);
+        if (options.BypassOsPageCache && stream is FileStream nocacheFs)
+        {
+            Storages.OsFileCacheControl.TryDisableOsCaching(nocacheFs.SafeFileHandle);
+        }
         var storage = options.StorageFactory.Invoke(stream, catalog.PageSize);
         return new ReadOnlyDatabase(catalog, storage, options);
     }
