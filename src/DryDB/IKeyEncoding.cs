@@ -1,4 +1,5 @@
 using System;
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
@@ -262,11 +263,21 @@ public sealed class AsciiOrdinalEncoding : IKeyEncoding
     /// byte-lexicographic order. Keys sharing an 8-byte prefix collide and fall back
     /// to the full comparison.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public ulong GetKeyDigest(ReadOnlySpan<byte> key)
     {
-        var length = Math.Min(key.Length, sizeof(ulong));
+        if (key.Length >= sizeof(ulong))
+        {
+            // Read the first 8 bytes as a big-endian number: one unaligned load plus
+            // one byte-swap instruction (ldr + rev / mov + bswap).
+            return BinaryPrimitives.ReverseEndianness(
+                Unsafe.ReadUnaligned<ulong>(ref MemoryMarshal.GetReference(key)));
+        }
+
+        // Shorter keys only: a whole-ulong load would read past the key, so pack the
+        // bytes individually (zero padding the low bits).
         var digest = 0UL;
-        for (var i = 0; i < length; i++)
+        for (var i = 0; i < key.Length; i++)
         {
             digest |= (ulong)key[i] << (56 - i * 8);
         }
