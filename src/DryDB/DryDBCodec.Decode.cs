@@ -65,7 +65,7 @@ namespace DryDB;
 //   offset[page_count](8 each): long
 
 // NOTE: little endian only
-[StructLayout(LayoutKind.Explicit, Size = 26)]
+[StructLayout(LayoutKind.Explicit, Size = 26, Pack = 1)]
 unsafe struct Header
 {
     public static ReadOnlySpan<byte> MagicBytesValue => "DRY\0"u8;
@@ -110,7 +110,7 @@ unsafe struct Header
     }
 }
 
-[StructLayout(LayoutKind.Explicit, Size = 4)]
+[StructLayout(LayoutKind.Explicit, Size = 4, Pack = 1)]
 public struct PageHeader
 {
     [FieldOffset(0)]
