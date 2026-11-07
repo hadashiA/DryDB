@@ -11,7 +11,12 @@ abstract class KeyValueList(IKeyEncoding keyEncoding) : IEnumerable<KeyValuePair
         : new DuplicateKeyValueList(keyEncoding);
 
     public abstract int Count { get; }
-    public IKeyEncoding KeyEncoding => keyEncoding;
+
+    /// <summary>
+    /// The encoding that matches the keys this list enumerates — the composite
+    /// source+rid keys for duplicate lists, not the source keys passed to Add.
+    /// </summary>
+    public virtual IKeyEncoding KeyEncoding => keyEncoding;
 
     public abstract void Add(ReadOnlyMemory<byte> key, ReadOnlyMemory<byte> value);
 
@@ -54,6 +59,8 @@ class UniqueKeyValueList(IKeyEncoding keyEncoding) : KeyValueList(keyEncoding)
 class DuplicateKeyValueList(IKeyEncoding keyEncoding) : KeyValueList(keyEncoding)
 {
     public override int Count => count;
+
+    public override IKeyEncoding KeyEncoding { get; } = new DuplicateKeyEncoding(keyEncoding);
 
     readonly SortedList<ReadOnlyMemory<byte>, List<ReadOnlyMemory<byte>>> list = new(keyEncoding);
     int count;
