@@ -15,19 +15,21 @@ public record DatabaseLoadOptions
 {
     public static DatabaseLoadOptions Default => new();
 
+    // This factory must not reference any file I/O type: it is rooted by every use
+    // of DatabaseLoadOptions, so a FileStream branch here would link file support
+    // (pread and friends) into applications that never open a file — see
+    // FileStorage.Factory, which OpenFileAsync swaps in, for the file path.
     public static readonly StorageFactory DefaultStorageFactory = (stream, pageSize) =>
     {
-        if (stream is FileStream fs)
-        {
-            return new PreadPageLoader(fs.SafeFileHandle);
-        }
-
         if (stream is MemoryStream ms)
         {
             return new InMemoryPageLoader(ms.ToArray());
         }
 
-        throw new NotSupportedException($"unsupported stream type: {stream.GetType().Name}");
+        throw new NotSupportedException(
+            $"unsupported stream type: {stream.GetType().Name}. " +
+            $"To read a file, use ReadOnlyDatabase.OpenFileAsync, or set " +
+            $"DatabaseLoadOptions.StorageFactory = FileStorage.Factory.");
     };
 
     public int CacheSize { get; set; } = 2000 * 1024 * 1024;
@@ -39,6 +41,10 @@ public sealed class ReadOnlyDatabase : IDisposable
     public static async ValueTask<ReadOnlyDatabase> OpenFileAsync(string path, DatabaseLoadOptions? options = null, CancellationToken cancellationToken = default)
     {
         options ??= DatabaseLoadOptions.Default;
+        if (ReferenceEquals(options.StorageFactory, DatabaseLoadOptions.DefaultStorageFactory))
+        {
+            options = options with { StorageFactory = FileStorage.Factory };
+        }
         var fs = File.OpenRead(path);
         return await OpenAsync(fs, options, cancellationToken);
     }
