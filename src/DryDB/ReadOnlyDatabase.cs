@@ -23,7 +23,12 @@ public record DatabaseLoadOptions
     {
         if (stream is MemoryStream ms)
         {
-            return new InMemoryPageLoader(ms.ToArray());
+            // Read directly from the stream's buffer when it is exposable: the
+            // loader then aliases the live buffer, so the stream must not be
+            // written to while the database is open.
+            return ms.TryGetBuffer(out var buffer)
+                ? new InMemoryPageLoader(buffer)
+                : new InMemoryPageLoader(ms.ToArray());
         }
 
         throw new NotSupportedException(
@@ -55,6 +60,18 @@ public sealed class ReadOnlyDatabase : IDisposable
         var catalog = await DryDBCodec.ParseCatalogAsync(stream, cancellationToken);
         var storage = options.StorageFactory.Invoke(stream, catalog.PageSize);
         return new ReadOnlyDatabase(catalog, storage, options);
+    }
+
+    /// <summary>
+    /// Opens a database held entirely in memory without copying it. The memory is
+    /// read for the lifetime of the database, so it must not change until the
+    /// database is disposed.
+    /// </summary>
+    public static async ValueTask<ReadOnlyDatabase> OpenAsync(ReadOnlyMemory<byte> data, DatabaseLoadOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        options ??= DatabaseLoadOptions.Default;
+        var catalog = await DryDBCodec.ParseCatalogAsync(new ReadOnlyMemoryStream(data), cancellationToken);
+        return new ReadOnlyDatabase(catalog, new InMemoryPageLoader(data), options);
     }
 
     public Catalog Catalog { get; }

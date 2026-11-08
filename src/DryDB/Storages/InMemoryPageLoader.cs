@@ -9,7 +9,7 @@ using DryDB.Internal;
 
 namespace DryDB.Storages;
 
-public class InMemoryPageLoader(Memory<byte> memory) : IPageLoader
+public class InMemoryPageLoader(ReadOnlyMemory<byte> memory) : IPageLoader
 {
     public void Dispose()
     {
