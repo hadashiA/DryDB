@@ -47,7 +47,7 @@ sealed class ReadOnlyMemoryStream(ReadOnlyMemory<byte> memory) : Stream
 
     public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
         cancellationToken.IsCancellationRequested
-            ? ValueTask.FromCanceled<int>(cancellationToken)
+            ? new ValueTask<int>(Task.FromCanceled<int>(cancellationToken))
             : new ValueTask<int>(Read(buffer.Span));
 
     public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
